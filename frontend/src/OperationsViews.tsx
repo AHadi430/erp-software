@@ -1,0 +1,33 @@
+import { FormEvent, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Product, request, User } from "./api";
+
+type Dashboard = { sales_today: string; sales_month: string; purchases_month: string; inventory_value: string; cash_balance: string; bank_balance: string; receivables: string; payables: string; gross_profit: string; net_profit: string; low_stock: { name: string; quantity: string }[] };
+type Stock = { product_id: string; sku: string; name: string; quantity: string; value: string; minimum_stock: string; is_low_stock: boolean };
+type Business = { business_name: string; address?: string; phone?: string; email?: string; tax_number?: string; invoice_prefix: string; show_tax_on_invoice: boolean };
+const pkr = (value: string | number) => new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", maximumFractionDigits: 0 }).format(Number(value));
+
+export function DashboardView() {
+  const report = useQuery({ queryKey: ["dashboard"], queryFn: () => request<Dashboard>("/reports/dashboard") });
+  if (report.isPending) return <p>Loading dashboard…</p>; if (report.error || !report.data) return <p className="error">{report.error?.message ?? "Dashboard could not be loaded."}</p>;
+  const item = report.data;
+  return <><section className="cards">{[["Today’s sales", item.sales_today], ["Monthly sales", item.sales_month], ["Monthly purchases", item.purchases_month], ["Inventory value", item.inventory_value], ["Receivables", item.receivables], ["Payables", item.payables], ["Gross profit", item.gross_profit], ["Net profit", item.net_profit]].map(([label, value]) => <article key={label}><span>{label}</span><strong>{pkr(value)}</strong></article>)}</section><section className="panel"><h2>Low-stock products</h2>{item.low_stock.length ? <ul>{item.low_stock.map(product => <li key={product.name}>{product.name}: {product.quantity}</li>)}</ul> : <p className="success">No low-stock products.</p>}</section></>;
+}
+
+export function InventoryView() {
+  const client = useQueryClient(); const [productId, setProductId] = useState(""); const [quantity, setQuantity] = useState(0); const [notes, setNotes] = useState("");
+  const stock = useQuery({ queryKey: ["stock"], queryFn: () => request<Stock[]>("/inventory/stock") }); const products = useQuery({ queryKey: ["products"], queryFn: () => request<Product[]>("/products?limit=200") });
+  const adjustment = useMutation({ mutationFn: () => request("/inventory/adjustments", { method: "POST", body: JSON.stringify({ product_id: productId, quantity, notes }) }), onSuccess: () => { setProductId(""); setQuantity(0); setNotes(""); client.invalidateQueries({ queryKey: ["stock"] }); } });
+  const submit = (event: FormEvent) => { event.preventDefault(); adjustment.mutate(); };
+  return <section className="invoice-page"><h1>Inventory</h1><section className="panel"><h2>Stock adjustment</h2><form className="line-adder" onSubmit={submit}><select required value={productId} onChange={e => setProductId(e.target.value)}><option value="">Select product</option>{products.data?.map(product => <option key={product.id} value={product.id}>{product.sku} — {product.name}</option>)}</select><input required type="number" step="0.001" placeholder="+/- quantity" value={quantity || ""} onChange={e => setQuantity(Number(e.target.value))} /><input required placeholder="Reason / notes" value={notes} onChange={e => setNotes(e.target.value)} /><button disabled={adjustment.isPending}>Post adjustment</button></form>{adjustment.error && <p className="error">{adjustment.error.message}</p>}</section><section className="panel"><h2>Current stock</h2><table><thead><tr><th>SKU</th><th>Product</th><th>Quantity</th><th>Value</th><th>Status</th></tr></thead><tbody>{stock.data?.map(item => <tr key={item.product_id}><td>{item.sku}</td><td>{item.name}</td><td>{item.quantity}</td><td>{pkr(item.value)}</td><td>{item.is_low_stock ? "Low stock" : "OK"}</td></tr>)}</tbody></table></section></section>;
+}
+
+export function SettingsView() {
+  const client = useQueryClient(); const business = useQuery({ queryKey: ["business"], queryFn: () => request<Business>("/settings/business") }); const users = useQuery({ queryKey: ["users"], queryFn: () => request<User[]>("/users") });
+  const [form, setForm] = useState<Business | null>(null); const [email, setEmail] = useState(""); const [fullName, setFullName] = useState(""); const [password, setPassword] = useState("");
+  const save = useMutation({ mutationFn: () => request<Business>("/settings/business", { method: "PUT", body: JSON.stringify(form) }), onSuccess: data => { setForm(data); client.invalidateQueries({ queryKey: ["business"] }); } });
+  const addUser = useMutation({ mutationFn: () => request<User>("/users", { method: "POST", body: JSON.stringify({ email, full_name: fullName, password, role: "salesperson" }) }), onSuccess: () => { setEmail(""); setFullName(""); setPassword(""); client.invalidateQueries({ queryKey: ["users"] }); } });
+  const values = form ?? business.data;
+  if (!values) return <p>Loading settings…</p>;
+  return <section className="invoice-page"><h1>Settings & users</h1><section className="panel"><h2>Business information</h2><form className="settings-form" onSubmit={e => { e.preventDefault(); save.mutate(); }}><input value={values.business_name} placeholder="Business name" onChange={e => setForm({ ...values, business_name: e.target.value })} /><input value={values.phone ?? ""} placeholder="Phone" onChange={e => setForm({ ...values, phone: e.target.value })} /><input value={values.email ?? ""} placeholder="Email" onChange={e => setForm({ ...values, email: e.target.value })} /><input value={values.tax_number ?? ""} placeholder="NTN / tax number" onChange={e => setForm({ ...values, tax_number: e.target.value })} /><input value={values.address ?? ""} placeholder="Address" onChange={e => setForm({ ...values, address: e.target.value })} /><button disabled={save.isPending}>Save business settings</button></form></section><section className="panel"><h2>Users</h2><form className="line-adder" onSubmit={e => { e.preventDefault(); addUser.mutate(); }}><input required placeholder="Full name" value={fullName} onChange={e => setFullName(e.target.value)} /><input required type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} /><input required type="password" minLength={8} placeholder="Temporary password" value={password} onChange={e => setPassword(e.target.value)} /><button>Add user</button></form><ul>{users.data?.map(user => <li key={user.id}>{user.full_name} — {user.role} ({user.is_active ? "active" : "inactive"})</li>)}</ul></section></section>;
+}
