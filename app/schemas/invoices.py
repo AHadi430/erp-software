@@ -39,6 +39,7 @@ class PurchaseInvoiceCreate(BaseModel):
 
 class InvoiceItemRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
     product_id: uuid.UUID
     description: str
     quantity: Decimal
@@ -55,6 +56,8 @@ class InvoiceRead(BaseModel):
     id: uuid.UUID
     invoice_number: str
     invoice_date: date
+    customer_id: Optional[uuid.UUID] = None
+    supplier_id: Optional[uuid.UUID] = None
     status: str
     subtotal: Decimal
     discount_total: Decimal

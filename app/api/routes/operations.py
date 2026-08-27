@@ -6,21 +6,25 @@ from app.core.dependencies import get_current_user, require_roles
 from app.database.session import get_db
 from app.models.auth import User, UserRole
 from app.models.finance import Account, AccountType, JournalLine, TaxRate
+from app.models.expenses import CashBankTransaction, Expense, ExpenseCategory
 from app.models.invoices import PurchaseInvoice, PurchaseInvoiceItem, SalesInvoice, SalesInvoiceItem
 from app.models.master import Customer, Supplier
-from app.models.operations import Payment, PaymentAllocation
+from app.models.operations import Payment, PaymentAllocation, StockMovement
 from app.models.returns import ReturnDocument, ReturnType
 from app.models.settings import BusinessSettings
 from app.schemas.inventory import StockAdjustmentCreate, StockItemRead
 from app.schemas.settings import BusinessSettingsRead, BusinessSettingsUpdate, TaxRateCreate, TaxRateRead
+from app.schemas.expenses import CashTransactionCreate, ExpenseCategoryCreate, ExpenseCreate
 from app.services.inventory import adjust_stock, inventory_snapshot
 from app.services.pdf import render_invoice_pdf
+from app.services.expenses import create_cash_transaction, create_expense
 
 inventory_router = APIRouter(prefix="/inventory", tags=["inventory"], dependencies=[Depends(get_current_user)])
 reports_router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
 settings_router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(get_current_user)])
 admin_access = Depends(require_roles(UserRole.ADMIN))
 inventory_access = Depends(require_roles(UserRole.ADMIN, UserRole.INVENTORY_MANAGER, UserRole.ACCOUNTANT))
+accounting_access = Depends(require_roles(UserRole.ADMIN, UserRole.ACCOUNTANT))
 
 @inventory_router.get("/stock", response_model=list[StockItemRead], dependencies=[inventory_access])
 def stock(db: Session = Depends(get_db)):
@@ -29,6 +33,40 @@ def stock(db: Session = Depends(get_db)):
 @inventory_router.post("/adjustments", status_code=status.HTTP_201_CREATED, dependencies=[inventory_access])
 def adjustment(payload: StockAdjustmentCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return adjust_stock(db, payload, user.id)
+
+@inventory_router.get("/movements", dependencies=[inventory_access])
+def movements(limit: int = 100, db: Session = Depends(get_db)):
+    return list(db.scalars(select(StockMovement).order_by(StockMovement.occurred_on.desc(), StockMovement.created_at.desc()).limit(min(max(limit, 1), 500))))
+
+@reports_router.get("/expenses")
+def expenses_report(db: Session = Depends(get_db)):
+    return list(db.scalars(select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())))
+
+@reports_router.get("/accounts")
+def accounts_report(db: Session = Depends(get_db)):
+    return [{"id": account.id, "code": account.code, "name": account.name, "type": account.account_type.value, "active": account.is_active} for account in db.scalars(select(Account).where(Account.is_active.is_(True)).order_by(Account.code))]
+
+@reports_router.get("/cash-bank-transactions")
+def cash_bank_transactions(db: Session = Depends(get_db)):
+    return list(db.scalars(select(CashBankTransaction).order_by(CashBankTransaction.transaction_date.desc(), CashBankTransaction.created_at.desc())))
+
+@settings_router.get("/expense-categories", dependencies=[accounting_access])
+def expense_categories(db: Session = Depends(get_db)):
+    return list(db.scalars(select(ExpenseCategory).where(ExpenseCategory.is_active.is_(True)).order_by(ExpenseCategory.name)))
+
+@settings_router.post("/expense-categories", status_code=status.HTTP_201_CREATED, dependencies=[accounting_access])
+def create_expense_category(payload: ExpenseCategoryCreate, db: Session = Depends(get_db)):
+    if db.scalar(select(ExpenseCategory).where(ExpenseCategory.name == payload.name)):
+        raise HTTPException(status_code=409, detail="Expense category already exists")
+    category = ExpenseCategory(name=payload.name); db.add(category); db.commit(); db.refresh(category); return category
+
+@reports_router.post("/expenses", status_code=status.HTTP_201_CREATED, dependencies=[accounting_access])
+def post_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return create_expense(db, payload, user.id)
+
+@reports_router.post("/cash-bank-transactions", status_code=status.HTTP_201_CREATED, dependencies=[accounting_access])
+def post_cash_bank_transaction(payload: CashTransactionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return create_cash_transaction(db, payload, user.id)
 
 def _balances(db: Session):
     rows = db.execute(select(Account, func.coalesce(func.sum(JournalLine.debit), 0), func.coalesce(func.sum(JournalLine.credit), 0)).outerjoin(JournalLine, JournalLine.account_id == Account.id).group_by(Account.id).order_by(Account.code)).all()
@@ -46,7 +84,7 @@ def dashboard(db: Session = Depends(get_db)):
     purchases_month = db.scalar(select(func.coalesce(func.sum(PurchaseInvoice.grand_total), 0)).where(PurchaseInvoice.invoice_date >= month_start, PurchaseInvoice.status == "posted"))
     balances = {line["code"]: line["balance"] for line in _balances(db)}
     stock_rows = inventory_snapshot(db)
-    revenue, cogs, expenses = balances.get("4000", 0) - balances.get("4010", 0), balances.get("5000", 0), balances.get("6000", 0) + balances.get("5100", 0)
+    revenue, cogs, expenses = balances.get("4000", 0) + balances.get("4010", 0), balances.get("5000", 0), balances.get("6000", 0) + balances.get("5100", 0)
     return {"sales_today": sales_today, "sales_month": sales_month, "purchases_month": purchases_month, "inventory_value": sum(row["value"] for row in stock_rows), "cash_balance": balances.get("1000", 0), "bank_balance": balances.get("1010", 0), "receivables": sum(invoice.due_amount for invoice in db.scalars(select(SalesInvoice).where(SalesInvoice.status == "posted"))), "payables": sum(invoice.due_amount for invoice in db.scalars(select(PurchaseInvoice).where(PurchaseInvoice.status == "posted"))), "gross_profit": revenue - cogs, "net_profit": revenue - cogs - expenses, "low_stock": [row for row in stock_rows if row["is_low_stock"]]}
 
 @reports_router.get("/trial-balance")

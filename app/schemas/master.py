@@ -15,6 +15,7 @@ class EntityRead(BaseModel):
 class CategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: Optional[str] = None
+    is_active: bool = True
 
 class CategoryRead(EntityRead):
     name: str
@@ -22,6 +23,7 @@ class CategoryRead(EntityRead):
 
 class BrandCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    is_active: bool = True
 
 class BrandRead(EntityRead):
     name: str
@@ -41,6 +43,7 @@ class ProductCreate(BaseModel):
     selling_price: Decimal = Field(ge=0)
     minimum_stock: Decimal = Field(default=Decimal("0"), ge=0)
     tax_rate_id: Optional[uuid.UUID] = None
+    is_active: bool = True
 
 class ProductRead(ProductCreate, EntityRead):
     pass
@@ -52,6 +55,7 @@ class PartyBase(BaseModel):
     address: Optional[str] = None
     tax_number: Optional[str] = Field(default=None, max_length=80)
     opening_balance: Decimal = Field(default=Decimal("0"), ge=0)
+    is_active: bool = True
 
 class CustomerCreate(PartyBase):
     credit_limit: Decimal = Field(default=Decimal("0"), ge=0)

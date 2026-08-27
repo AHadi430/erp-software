@@ -1,3 +1,5 @@
+from datetime import date
+from typing import Optional
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,8 +30,13 @@ def post_sale(payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: 
     return invoice_response(create_sale(db, payload, user.id), SalesInvoiceItem, "sales_invoice_id")
 
 @sales_router.get("", response_model=list[InvoiceRead], dependencies=[sales_access])
-def list_sales(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    invoices = db.scalars(select(SalesInvoice).order_by(SalesInvoice.invoice_date.desc()).limit(min(max(limit, 1), 200)).offset(max(offset, 0)))
+def list_sales(limit: int = 50, offset: int = 0, q: Optional[str] = None, status_filter: Optional[str] = None, date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    query = select(SalesInvoice).order_by(SalesInvoice.invoice_date.desc()).limit(min(max(limit, 1), 200)).offset(max(offset, 0))
+    if q: query = query.where(SalesInvoice.invoice_number.ilike(f"%{q.strip()}%"))
+    if status_filter: query = query.where(SalesInvoice.status == status_filter)
+    if date_from: query = query.where(SalesInvoice.invoice_date >= date_from)
+    if date_to: query = query.where(SalesInvoice.invoice_date <= date_to)
+    invoices = db.scalars(query)
     return [invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id") for invoice in invoices]
 
 @sales_router.post("/{invoice_id}/cancel", response_model=InvoiceRead, dependencies=[sales_access])
@@ -49,8 +56,13 @@ def post_purchase(payload: PurchaseInvoiceCreate, db: Session = Depends(get_db),
     return invoice_response(create_purchase(db, payload, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
 
 @purchases_router.get("", response_model=list[InvoiceRead], dependencies=[purchase_access])
-def list_purchases(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    invoices = db.scalars(select(PurchaseInvoice).order_by(PurchaseInvoice.invoice_date.desc()).limit(min(max(limit, 1), 200)).offset(max(offset, 0)))
+def list_purchases(limit: int = 50, offset: int = 0, q: Optional[str] = None, status_filter: Optional[str] = None, date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    query = select(PurchaseInvoice).order_by(PurchaseInvoice.invoice_date.desc()).limit(min(max(limit, 1), 200)).offset(max(offset, 0))
+    if q: query = query.where(PurchaseInvoice.invoice_number.ilike(f"%{q.strip()}%"))
+    if status_filter: query = query.where(PurchaseInvoice.status == status_filter)
+    if date_from: query = query.where(PurchaseInvoice.invoice_date >= date_from)
+    if date_to: query = query.where(PurchaseInvoice.invoice_date <= date_to)
+    invoices = db.scalars(query)
     return [invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id") for invoice in invoices]
 
 @purchases_router.post("/{invoice_id}/cancel", response_model=InvoiceRead, dependencies=[purchase_access])

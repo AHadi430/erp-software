@@ -23,3 +23,10 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 export async function login(email: string, password: string) {
   return request<{ access_token: string }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
 }
+
+export async function downloadPdf(path: string, filename: string) {
+  const token = localStorage.getItem("access_token");
+  const response = await fetch(`${API_URL}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) throw new Error("Could not download PDF");
+  const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
+}

@@ -41,6 +41,16 @@ def post_journal(db: Session, *, entry_date, source_type: str, source_id: str, m
 def available_stock(db: Session, product_id) -> Decimal:
     return Decimal(db.scalar(select(func.coalesce(func.sum(StockMovement.quantity), 0)).where(StockMovement.product_id == product_id)) or 0)
 
+def inventory_value(db: Session, product_id) -> Decimal:
+    movements = db.scalars(select(StockMovement).where(StockMovement.product_id == product_id)).all()
+    return sum((Decimal(movement.quantity) * Decimal(movement.unit_cost) for movement in movements), ZERO)
+
+def average_inventory_cost(db: Session, product_id) -> Decimal:
+    quantity = available_stock(db, product_id)
+    if quantity <= ZERO:
+        return ZERO
+    return money(inventory_value(db, product_id) / quantity)
+
 def resolve_product_and_rate(db: Session, item):
     product = db.scalar(select(Product).where(Product.id == item.product_id, Product.is_active.is_(True)).with_for_update())
     if not product:
@@ -77,9 +87,11 @@ def create_sale(db: Session, payload, user_id):
                 raise HTTPException(status_code=422, detail=f"Insufficient stock for {product.name}")
             price = item.unit_price if item.unit_price is not None else product.selling_price
             gross, net, tax, line_total = calculate_line(item.quantity, price, item.discount_amount, tax_rate, payload.tax_inclusive)
-            cost = money(item.quantity * product.cost_price)
-            db.add(SalesInvoiceItem(sales_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, unit_cost=product.cost_price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total))
-            db.add(StockMovement(product_id=product.id, movement_type=StockMovementType.SALE, quantity=-item.quantity, unit_cost=product.cost_price, reference_type="sales_invoice", reference_id=str(invoice.id), occurred_on=payload.invoice_date, created_by_id=user_id))
+            sale_unit_cost = average_inventory_cost(db, product.id)
+            cost = money(item.quantity * sale_unit_cost)
+            db.add(SalesInvoiceItem(sales_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, unit_cost=sale_unit_cost, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total))
+            db.add(StockMovement(product_id=product.id, movement_type=StockMovementType.SALE, quantity=-item.quantity, unit_cost=sale_unit_cost, reference_type="sales_invoice", reference_id=str(invoice.id), occurred_on=payload.invoice_date, created_by_id=user_id))
+            product.cost_price = sale_unit_cost
             subtotal += gross; discount_total += item.discount_amount; revenue += net; tax_total += tax; cost_total += cost
         invoice.subtotal, invoice.discount_total, invoice.tax_total = money(subtotal), money(discount_total), money(tax_total)
         invoice.grand_total = money(revenue + tax_total)
@@ -110,9 +122,11 @@ def create_purchase(db: Session, payload, user_id):
                 raise HTTPException(status_code=422, detail="Purchase line unit price is required")
             gross, net, tax, line_total = calculate_line(item.quantity, item.unit_price, item.discount_amount, tax_rate, payload.tax_inclusive)
             unit_cost = money(net / item.quantity)
+            existing_quantity = available_stock(db, product.id)
+            existing_value = inventory_value(db, product.id)
             db.add(PurchaseInvoiceItem(purchase_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=item.unit_price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total))
             db.add(StockMovement(product_id=product.id, movement_type=StockMovementType.PURCHASE, quantity=item.quantity, unit_cost=unit_cost, reference_type="purchase_invoice", reference_id=str(invoice.id), occurred_on=payload.invoice_date, created_by_id=user_id))
-            product.cost_price = unit_cost
+            product.cost_price = money((existing_value + (item.quantity * unit_cost)) / (existing_quantity + item.quantity)) if existing_quantity + item.quantity > ZERO else unit_cost
             subtotal += gross; discount_total += item.discount_amount; inventory_total += net; tax_total += tax
         invoice.subtotal, invoice.discount_total, invoice.tax_total = money(subtotal), money(discount_total), money(tax_total)
         invoice.grand_total = money(inventory_total + tax_total)
