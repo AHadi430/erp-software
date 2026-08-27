@@ -85,7 +85,10 @@ def create_sale(db: Session, payload, user_id):
             product, tax_rate = resolve_product_and_rate(db, item)
             if available_stock(db, product.id) < item.quantity:
                 raise HTTPException(status_code=422, detail=f"Insufficient stock for {product.name}")
-            price = item.unit_price if item.unit_price is not None else product.selling_price
+            # Sales always use the current configured selling price. The client
+            # only supplies quantity/discount; this prevents price drift between
+            # the inventory catalog and posted invoices.
+            price = product.selling_price
             gross, net, tax, line_total = calculate_line(item.quantity, price, item.discount_amount, tax_rate, payload.tax_inclusive)
             sale_unit_cost = average_inventory_cost(db, product.id)
             cost = money(item.quantity * sale_unit_cost)
