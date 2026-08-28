@@ -30,3 +30,10 @@ export async function downloadPdf(path: string, filename: string) {
   if (!response.ok) throw new Error("Could not download PDF");
   const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
 }
+
+export async function downloadFile(path: string, filename: string) {
+  const token = localStorage.getItem("access_token");
+  const response = await fetch(`${API_URL}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) throw new Error("Could not download file");
+  const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
+}

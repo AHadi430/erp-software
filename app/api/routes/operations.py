@@ -1,4 +1,6 @@
 from datetime import date
+import csv
+import io
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -35,20 +37,30 @@ def adjustment(payload: StockAdjustmentCreate, db: Session = Depends(get_db), us
     return adjust_stock(db, payload, user.id)
 
 @inventory_router.get("/movements", dependencies=[inventory_access])
-def movements(limit: int = 100, db: Session = Depends(get_db)):
-    return list(db.scalars(select(StockMovement).order_by(StockMovement.occurred_on.desc(), StockMovement.created_at.desc()).limit(min(max(limit, 1), 500))))
+def movements(limit: int = 100, date_from: date | None = None, date_to: date | None = None, product_id: str | None = None, db: Session = Depends(get_db)):
+    query = select(StockMovement).order_by(StockMovement.occurred_on.desc(), StockMovement.created_at.desc()).limit(min(max(limit, 1), 500))
+    if date_from: query = query.where(StockMovement.occurred_on >= date_from)
+    if date_to: query = query.where(StockMovement.occurred_on <= date_to)
+    if product_id: query = query.where(StockMovement.product_id == product_id)
+    return list(db.scalars(query))
 
 @reports_router.get("/expenses")
-def expenses_report(db: Session = Depends(get_db)):
-    return list(db.scalars(select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())))
+def expenses_report(date_from: date | None = None, date_to: date | None = None, db: Session = Depends(get_db)):
+    query = select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
+    if date_from: query = query.where(Expense.expense_date >= date_from)
+    if date_to: query = query.where(Expense.expense_date <= date_to)
+    return list(db.scalars(query))
 
 @reports_router.get("/accounts")
 def accounts_report(db: Session = Depends(get_db)):
     return [{"id": account.id, "code": account.code, "name": account.name, "type": account.account_type.value, "active": account.is_active} for account in db.scalars(select(Account).where(Account.is_active.is_(True)).order_by(Account.code))]
 
 @reports_router.get("/cash-bank-transactions")
-def cash_bank_transactions(db: Session = Depends(get_db)):
-    return list(db.scalars(select(CashBankTransaction).order_by(CashBankTransaction.transaction_date.desc(), CashBankTransaction.created_at.desc())))
+def cash_bank_transactions(date_from: date | None = None, date_to: date | None = None, db: Session = Depends(get_db)):
+    query = select(CashBankTransaction).order_by(CashBankTransaction.transaction_date.desc(), CashBankTransaction.created_at.desc())
+    if date_from: query = query.where(CashBankTransaction.transaction_date >= date_from)
+    if date_to: query = query.where(CashBankTransaction.transaction_date <= date_to)
+    return list(db.scalars(query))
 
 @settings_router.get("/expense-categories", dependencies=[accounting_access])
 def expense_categories(db: Session = Depends(get_db)):
@@ -90,6 +102,15 @@ def dashboard(db: Session = Depends(get_db)):
 @reports_router.get("/trial-balance")
 def trial_balance(db: Session = Depends(get_db)):
     return _balances(db)
+
+@reports_router.get("/trial-balance.csv")
+def trial_balance_csv(db: Session = Depends(get_db)):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Code", "Account", "Type", "Debit", "Credit", "Balance"])
+    for row in _balances(db):
+        writer.writerow([row["code"], row["name"], row["type"], row["debit"], row["credit"], row["balance"]])
+    return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="trial-balance.csv"'})
 
 @reports_router.get("/profit-loss")
 def profit_loss(db: Session = Depends(get_db)):
