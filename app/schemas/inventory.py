@@ -9,6 +9,7 @@ class StockItemRead(BaseModel):
     product_id: uuid.UUID
     sku: str
     name: str
+    packaging: str
     quantity: Decimal
     unit_cost: Decimal
     value: Decimal

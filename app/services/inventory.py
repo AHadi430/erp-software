@@ -10,7 +10,7 @@ from app.services.invoices import ZERO, average_inventory_cost, available_stock,
 
 def inventory_snapshot(db: Session):
     quantities = dict(db.execute(select(StockMovement.product_id, func.coalesce(func.sum(StockMovement.quantity), 0)).group_by(StockMovement.product_id)).all())
-    return [{"product_id": product.id, "sku": product.sku, "name": product.name, "quantity": quantity, "unit_cost": average_inventory_cost(db, product.id), "value": money(inventory_value(db, product.id)), "minimum_stock": product.minimum_stock, "is_low_stock": Decimal(quantity) <= product.minimum_stock} for product in db.scalars(select(Product).where(Product.is_active.is_(True)).order_by(Product.name)) for quantity in [Decimal(quantities.get(product.id, 0))]]
+    return [{"product_id": product.id, "sku": product.sku, "name": f"{product.name} ({product.packaging})", "packaging": product.packaging, "quantity": quantity, "unit_cost": average_inventory_cost(db, product.id), "value": money(inventory_value(db, product.id)), "minimum_stock": product.minimum_stock, "is_low_stock": Decimal(quantity) <= product.minimum_stock} for product in db.scalars(select(Product).where(Product.is_active.is_(True)).order_by(Product.name, Product.packaging)) for quantity in [Decimal(quantities.get(product.id, 0))]]
 
 def adjust_stock(db: Session, payload, user_id):
     with db.begin_nested():

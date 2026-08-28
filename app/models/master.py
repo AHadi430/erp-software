@@ -34,6 +34,7 @@ class Product(UUIDTimestampMixin, Base):
     shade_code: Mapped[Optional[str]] = mapped_column(String(80), index=True)
     shade_name: Mapped[Optional[str]] = mapped_column(String(120))
     volume: Mapped[Optional[str]] = mapped_column(String(50))
+    packaging: Mapped[str] = mapped_column(String(30), default="Other", index=True)
     unit: Mapped[str] = mapped_column(String(30), default="each")
     cost_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     selling_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))

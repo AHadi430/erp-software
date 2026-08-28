@@ -38,6 +38,7 @@ class ProductCreate(BaseModel):
     shade_code: Optional[str] = None
     shade_name: Optional[str] = None
     volume: Optional[str] = None
+    packaging: str = Field(default="Other", pattern="^(Dabba|Gallon|Drum|Other)$")
     unit: str = "each"
     cost_price: Decimal = Field(default=Decimal("0"), ge=0)
     selling_price: Decimal = Field(ge=0)

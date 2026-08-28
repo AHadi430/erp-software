@@ -2,7 +2,7 @@ const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api/v1";
 
 export type User = { id: string; email: string; full_name: string; role: string; is_active: boolean };
 export type Category = { id: string; name: string; description?: string; is_active: boolean };
-export type Product = { id: string; sku: string; name: string; selling_price: string; cost_price: string; is_active: boolean };
+export type Product = { id: string; sku: string; name: string; packaging: "Dabba" | "Gallon" | "Drum" | "Other"; selling_price: string; cost_price: string; is_active: boolean };
 export type Party = { id: string; name: string; is_active: boolean };
 export type InvoiceLine = { product_id: string; quantity: number; unit_price: number; discount_amount: number };
 export type InvoiceResult = { invoice_number: string; grand_total: string; due_amount: string };
