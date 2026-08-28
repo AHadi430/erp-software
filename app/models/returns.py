@@ -26,6 +26,7 @@ class ReturnDocument(UUIDTimestampMixin, Base):
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     tax_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     grand_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    refunded_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     journal_entry_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("journal_entries.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))

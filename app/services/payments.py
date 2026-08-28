@@ -8,12 +8,14 @@ from app.models.invoices import PurchaseInvoice, SalesInvoice
 from app.models.master import Customer, Supplier
 from app.models.operations import Payment, PaymentAllocation, PaymentMethod
 from app.services.invoices import ZERO, get_accounts, money, next_number, post_journal
+from app.services.governance import audit, ensure_open_period
 
 
 def _cash_account(accounts, method: PaymentMethod):
     return accounts["1010"] if method == PaymentMethod.BANK_TRANSFER else accounts["1000"]
 
 def receive_customer_payment(db: Session, payload, user_id):
+    ensure_open_period(db, payload.payment_date)
     with db.begin_nested():
         if not db.get(Customer, payload.customer_id):
             raise HTTPException(status_code=404, detail="Customer was not found")
@@ -30,11 +32,12 @@ def receive_customer_payment(db: Session, payload, user_id):
             invoice.due_amount = money(invoice.due_amount - allocation.amount)
             db.add(PaymentAllocation(payment_id=payment.id, sales_invoice_id=invoice.id, amount=money(allocation.amount)))
         payment.journal_entry_id = post_journal(db, entry_date=payload.payment_date, source_type="customer_payment", source_id=str(payment.id), memo=f"Customer receipt {payment.payment_number}", user_id=user_id, lines=[(_cash_account(accounts, payload.method), payment.amount, ZERO, "Customer payment received"), (accounts["1100"], ZERO, payment.amount, "Accounts receivable settled")]).id
-    db.commit(); db.refresh(payment)
+    audit(db, action="post", entity_type="customer_payment", entity_id=payment.id, user_id=user_id, details={"number": payment.payment_number, "amount": payment.amount}); db.commit(); db.refresh(payment)
     return payment
 
 
 def pay_supplier(db: Session, payload, user_id):
+    ensure_open_period(db, payload.payment_date)
     with db.begin_nested():
         if not db.get(Supplier, payload.supplier_id):
             raise HTTPException(status_code=404, detail="Supplier was not found")
@@ -51,5 +54,5 @@ def pay_supplier(db: Session, payload, user_id):
             invoice.due_amount = money(invoice.due_amount - allocation.amount)
             db.add(PaymentAllocation(payment_id=payment.id, purchase_invoice_id=invoice.id, amount=money(allocation.amount)))
         payment.journal_entry_id = post_journal(db, entry_date=payload.payment_date, source_type="supplier_payment", source_id=str(payment.id), memo=f"Supplier payment {payment.payment_number}", user_id=user_id, lines=[(accounts["2000"], payment.amount, ZERO, "Accounts payable settled"), (_cash_account(accounts, payload.method), ZERO, payment.amount, "Supplier payment made")]).id
-    db.commit(); db.refresh(payment)
+    audit(db, action="post", entity_type="supplier_payment", entity_id=payment.id, user_id=user_id, details={"number": payment.payment_number, "amount": payment.amount}); db.commit(); db.refresh(payment)
     return payment

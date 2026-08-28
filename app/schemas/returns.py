@@ -16,3 +16,9 @@ class ReturnCreate(BaseModel):
     return_date: date = Field(default_factory=date.today)
     notes: Optional[str] = None
     items: list[ReturnLineCreate] = Field(min_length=1)
+
+
+class RefundCreate(BaseModel):
+    amount: Decimal = Field(gt=0, decimal_places=2)
+    refund_date: date = Field(default_factory=date.today)
+    notes: Optional[str] = None

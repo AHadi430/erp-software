@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
+from typing import Optional
 from decimal import Decimal, ROUND_HALF_UP
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -9,6 +11,7 @@ from app.models.finance import Account, JournalEntry, JournalLine, TaxRate
 from app.models.invoices import InvoiceStatus, PurchaseInvoice, PurchaseInvoiceItem, SalesInvoice, SalesInvoiceItem
 from app.models.master import Customer, Product, Supplier
 from app.models.operations import PaymentMethod, StockMovement, StockMovementType
+from app.services.governance import audit, ensure_open_period
 
 ZERO = Decimal("0.00")
 MONEY = Decimal("0.01")
@@ -70,7 +73,8 @@ def calculate_line(quantity: Decimal, unit_price: Decimal, discount: Decimal, ta
     net = money(after_discount - tax) if tax_inclusive else after_discount
     return gross, net, tax, after_discount if tax_inclusive else money(after_discount + tax)
 
-def create_sale(db: Session, payload, user_id):
+def create_sale(db: Session, payload, user_id, invoice_number: Optional[str] = None):
+    ensure_open_period(db, payload.invoice_date)
     if payload.paid_amount > ZERO and payload.payment_method is None:
         raise HTTPException(status_code=422, detail="A payment method is required for a received amount")
     # Current-user authentication may already have opened the request transaction.
@@ -78,7 +82,7 @@ def create_sale(db: Session, payload, user_id):
     with db.begin_nested():
         if payload.customer_id and not db.get(Customer, payload.customer_id):
             raise HTTPException(status_code=404, detail="Customer was not found")
-        invoice = SalesInvoice(invoice_number=next_number("SAL"), invoice_date=payload.invoice_date, customer_id=payload.customer_id, status=InvoiceStatus.POSTED, payment_method=payload.payment_method, tax_inclusive=payload.tax_inclusive, notes=payload.notes, created_by_id=user_id)
+        invoice = SalesInvoice(invoice_number=invoice_number or next_number("SAL"), invoice_date=payload.invoice_date, customer_id=payload.customer_id, status=InvoiceStatus.POSTED, payment_method=payload.payment_method, tax_inclusive=payload.tax_inclusive, notes=payload.notes, created_by_id=user_id)
         db.add(invoice); db.flush()
         revenue = tax_total = discount_total = subtotal = cost_total = ZERO
         for item in payload.items:
@@ -109,14 +113,16 @@ def create_sale(db: Session, payload, user_id):
         entry = post_journal(db, entry_date=payload.invoice_date, source_type="sales_invoice", source_id=str(invoice.id), memo=f"Sales invoice {invoice.invoice_number}", user_id=user_id, lines=lines)
         invoice.journal_entry_id = entry.id
     db.commit()
+    audit(db, action="post", entity_type="sales_invoice", entity_id=invoice.id, user_id=user_id, details={"number": invoice.invoice_number, "total": invoice.grand_total}); db.commit()
     db.refresh(invoice)
     return invoice
 
-def create_purchase(db: Session, payload, user_id):
+def create_purchase(db: Session, payload, user_id, invoice_number: Optional[str] = None):
+    ensure_open_period(db, payload.invoice_date)
     with db.begin_nested():
         if not db.get(Supplier, payload.supplier_id):
             raise HTTPException(status_code=404, detail="Supplier was not found")
-        invoice = PurchaseInvoice(invoice_number=next_number("PUR"), supplier_invoice_number=payload.supplier_invoice_number, invoice_date=payload.invoice_date, supplier_id=payload.supplier_id, status=InvoiceStatus.POSTED, payment_method=payload.payment_method, tax_inclusive=payload.tax_inclusive, notes=payload.notes, created_by_id=user_id)
+        invoice = PurchaseInvoice(invoice_number=invoice_number or next_number("PUR"), supplier_invoice_number=payload.supplier_invoice_number, invoice_date=payload.invoice_date, supplier_id=payload.supplier_id, status=InvoiceStatus.POSTED, payment_method=payload.payment_method, tax_inclusive=payload.tax_inclusive, notes=payload.notes, created_by_id=user_id)
         db.add(invoice); db.flush()
         inventory_total = tax_total = discount_total = subtotal = ZERO
         for item in payload.items:
@@ -142,8 +148,52 @@ def create_purchase(db: Session, payload, user_id):
         entry = post_journal(db, entry_date=payload.invoice_date, source_type="purchase_invoice", source_id=str(invoice.id), memo=f"Purchase invoice {invoice.invoice_number}", user_id=user_id, lines=lines)
         invoice.journal_entry_id = entry.id
     db.commit()
+    audit(db, action="post", entity_type="purchase_invoice", entity_id=invoice.id, user_id=user_id, details={"number": invoice.invoice_number, "total": invoice.grand_total}); db.commit()
     db.refresh(invoice)
     return invoice
+
+
+def save_draft(db: Session, invoice_type: str, payload, user_id, invoice_id=None):
+    """Save an editable draft without affecting stock, balances, or journals."""
+    invoice_model, item_model, prefix, party_field, item_fk = (SalesInvoice, SalesInvoiceItem, "SAL", "customer_id", "sales_invoice_id") if invoice_type == "sale" else (PurchaseInvoice, PurchaseInvoiceItem, "PUR", "supplier_id", "purchase_invoice_id")
+    with db.begin_nested():
+        if invoice_id:
+            invoice = db.scalar(select(invoice_model).where(invoice_model.id == invoice_id).with_for_update())
+            if not invoice or invoice.status != InvoiceStatus.DRAFT: raise HTTPException(status_code=422, detail="Only a draft invoice can be edited")
+            db.query(item_model).filter(getattr(item_model, item_fk) == invoice.id).delete(synchronize_session=False)
+        else:
+            invoice = invoice_model(invoice_number=next_number(prefix), status=InvoiceStatus.DRAFT, created_by_id=user_id)
+            db.add(invoice); db.flush()
+        if invoice_type == "sale" and payload.customer_id and not db.get(Customer, payload.customer_id): raise HTTPException(status_code=404, detail="Customer was not found")
+        if invoice_type == "purchase" and not db.get(Supplier, payload.supplier_id): raise HTTPException(status_code=404, detail="Supplier was not found")
+        invoice.invoice_date, invoice.payment_method, invoice.tax_inclusive, invoice.notes = payload.invoice_date, payload.payment_method, payload.tax_inclusive, payload.notes
+        setattr(invoice, party_field, getattr(payload, party_field))
+        if invoice_type == "purchase": invoice.supplier_invoice_number = payload.supplier_invoice_number
+        subtotal = discount = tax_total = net_total = ZERO
+        for item in payload.items:
+            product, tax_rate = resolve_product_and_rate(db, item)
+            price = product.selling_price if invoice_type == "sale" else item.unit_price
+            if price is None: raise HTTPException(status_code=422, detail="Purchase line unit price is required")
+            gross, net, tax, line_total = calculate_line(item.quantity, price, item.discount_amount, tax_rate, payload.tax_inclusive)
+            values = dict(product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total)
+            if invoice_type == "sale": values.update(sales_invoice_id=invoice.id, unit_cost=ZERO)
+            else: values.update(purchase_invoice_id=invoice.id)
+            db.add(item_model(**values)); subtotal += gross; discount += item.discount_amount; tax_total += tax; net_total += net
+        invoice.subtotal, invoice.discount_total, invoice.tax_total, invoice.grand_total = money(subtotal), money(discount), money(tax_total), money(net_total + tax_total)
+        invoice.paid_amount, invoice.due_amount = ZERO, invoice.grand_total
+    audit(db, action="save_draft", entity_type=f"{invoice_type}_invoice", entity_id=invoice.id, user_id=user_id, details={"number": invoice.invoice_number}); db.commit(); db.refresh(invoice)
+    return invoice
+
+
+def post_draft(db: Session, invoice_type: str, invoice_id, user_id):
+    invoice_model, item_model, party_field, item_fk = (SalesInvoice, SalesInvoiceItem, "customer_id", "sales_invoice_id") if invoice_type == "sale" else (PurchaseInvoice, PurchaseInvoiceItem, "supplier_id", "purchase_invoice_id")
+    invoice = db.get(invoice_model, invoice_id)
+    if not invoice or invoice.status != InvoiceStatus.DRAFT: raise HTTPException(status_code=422, detail="Only a draft invoice can be posted")
+    items = list(db.scalars(select(item_model).where(getattr(item_model, item_fk) == invoice.id)))
+    payload = SimpleNamespace(**{party_field: getattr(invoice, party_field), "invoice_date": invoice.invoice_date, "payment_method": invoice.payment_method, "paid_amount": ZERO, "tax_inclusive": invoice.tax_inclusive, "notes": invoice.notes, "items": [SimpleNamespace(product_id=x.product_id, quantity=x.quantity, unit_price=x.unit_price, discount_amount=x.discount_amount, tax_rate=x.tax_rate) for x in items], **({"supplier_invoice_number": invoice.supplier_invoice_number} if invoice_type == "purchase" else {})})
+    number = invoice.invoice_number
+    db.delete(invoice); db.flush()
+    return create_sale(db, payload, user_id, number) if invoice_type == "sale" else create_purchase(db, payload, user_id, number)
 
 
 def cancel_invoice(db: Session, invoice_type: str, invoice_id, user_id):
@@ -155,6 +205,7 @@ def cancel_invoice(db: Session, invoice_type: str, invoice_id, user_id):
         invoice = db.scalar(select(invoice_model).where(invoice_model.id == invoice_id).with_for_update())
         if not invoice or invoice.status != InvoiceStatus.POSTED:
             raise HTTPException(status_code=422, detail="Only a posted invoice can be cancelled")
+        ensure_open_period(db, invoice.invoice_date)
         if invoice.paid_amount > ZERO or invoice.returned_amount > ZERO:
             raise HTTPException(status_code=422, detail="Cancel an invoice only before payments or returns; use return/payment workflows instead")
         original_lines = list(db.scalars(select(JournalLine).where(JournalLine.journal_entry_id == invoice.journal_entry_id)))
@@ -172,5 +223,5 @@ def cancel_invoice(db: Session, invoice_type: str, invoice_id, user_id):
             quantity = item.quantity if invoice_type == "sale" else -item.quantity
             unit_cost = item.unit_cost if invoice_type == "sale" else money((item.line_total - item.tax_amount) / item.quantity)
             db.add(StockMovement(product_id=item.product_id, movement_type=movement_type, quantity=quantity, unit_cost=unit_cost, reference_type=source_type, reference_id=str(invoice.id), occurred_on=invoice.invoice_date, created_by_id=user_id))
-    db.commit(); db.refresh(invoice)
+    audit(db, action="cancel", entity_type=f"{invoice_type}_invoice", entity_id=invoice.id, user_id=user_id, details={"number": invoice.invoice_number}); db.commit(); db.refresh(invoice)
     return invoice

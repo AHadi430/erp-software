@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Optional
 import csv
 import io
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -7,16 +8,18 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user, require_roles
 from app.database.session import get_db
 from app.models.auth import User, UserRole
-from app.models.finance import Account, AccountType, JournalLine, TaxRate
+from app.models.finance import Account, AccountType, JournalEntry, JournalLine, TaxRate
 from app.models.expenses import CashBankTransaction, Expense, ExpenseCategory
 from app.models.invoices import PurchaseInvoice, PurchaseInvoiceItem, SalesInvoice, SalesInvoiceItem
 from app.models.master import Customer, Supplier
 from app.models.operations import Payment, PaymentAllocation, StockMovement
 from app.models.returns import ReturnDocument, ReturnType
 from app.models.settings import BusinessSettings
+from app.models.governance import AccountingPeriod, AuditLog
 from app.schemas.inventory import StockAdjustmentCreate, StockItemRead
 from app.schemas.settings import BusinessSettingsRead, BusinessSettingsUpdate, TaxRateCreate, TaxRateRead
 from app.schemas.expenses import CashTransactionCreate, ExpenseCategoryCreate, ExpenseCreate
+from app.schemas.governance import AccountingPeriodCreate
 from app.services.inventory import adjust_stock, inventory_snapshot
 from app.services.pdf import render_invoice_pdf
 from app.services.expenses import create_cash_transaction, create_expense
@@ -37,7 +40,7 @@ def adjustment(payload: StockAdjustmentCreate, db: Session = Depends(get_db), us
     return adjust_stock(db, payload, user.id)
 
 @inventory_router.get("/movements", dependencies=[inventory_access])
-def movements(limit: int = 100, date_from: date | None = None, date_to: date | None = None, product_id: str | None = None, db: Session = Depends(get_db)):
+def movements(limit: int = 100, date_from: Optional[date] = None, date_to: Optional[date] = None, product_id: Optional[str] = None, db: Session = Depends(get_db)):
     query = select(StockMovement).order_by(StockMovement.occurred_on.desc(), StockMovement.created_at.desc()).limit(min(max(limit, 1), 500))
     if date_from: query = query.where(StockMovement.occurred_on >= date_from)
     if date_to: query = query.where(StockMovement.occurred_on <= date_to)
@@ -45,7 +48,7 @@ def movements(limit: int = 100, date_from: date | None = None, date_to: date | N
     return list(db.scalars(query))
 
 @reports_router.get("/expenses")
-def expenses_report(date_from: date | None = None, date_to: date | None = None, db: Session = Depends(get_db)):
+def expenses_report(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
     query = select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
     if date_from: query = query.where(Expense.expense_date >= date_from)
     if date_to: query = query.where(Expense.expense_date <= date_to)
@@ -56,7 +59,7 @@ def accounts_report(db: Session = Depends(get_db)):
     return [{"id": account.id, "code": account.code, "name": account.name, "type": account.account_type.value, "active": account.is_active} for account in db.scalars(select(Account).where(Account.is_active.is_(True)).order_by(Account.code))]
 
 @reports_router.get("/cash-bank-transactions")
-def cash_bank_transactions(date_from: date | None = None, date_to: date | None = None, db: Session = Depends(get_db)):
+def cash_bank_transactions(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
     query = select(CashBankTransaction).order_by(CashBankTransaction.transaction_date.desc(), CashBankTransaction.created_at.desc())
     if date_from: query = query.where(CashBankTransaction.transaction_date >= date_from)
     if date_to: query = query.where(CashBankTransaction.transaction_date <= date_to)
@@ -80,8 +83,12 @@ def post_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: Us
 def post_cash_bank_transaction(payload: CashTransactionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return create_cash_transaction(db, payload, user.id)
 
-def _balances(db: Session):
-    rows = db.execute(select(Account, func.coalesce(func.sum(JournalLine.debit), 0), func.coalesce(func.sum(JournalLine.credit), 0)).outerjoin(JournalLine, JournalLine.account_id == Account.id).group_by(Account.id).order_by(Account.code)).all()
+def _balances(db: Session, date_from: Optional[date] = None, date_to: Optional[date] = None):
+    lines = select(JournalLine).join(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id)
+    if date_from: lines = lines.where(JournalEntry.entry_date >= date_from)
+    if date_to: lines = lines.where(JournalEntry.entry_date <= date_to)
+    line_sq = lines.subquery()
+    rows = db.execute(select(Account, func.coalesce(func.sum(line_sq.c.debit), 0), func.coalesce(func.sum(line_sq.c.credit), 0)).outerjoin(line_sq, line_sq.c.account_id == Account.id).group_by(Account.id).order_by(Account.code)).all()
     result = []
     for account, debit, credit in rows:
         natural = debit - credit if account.account_type in {AccountType.ASSET, AccountType.EXPENSE} else credit - debit
@@ -89,39 +96,56 @@ def _balances(db: Session):
     return result
 
 @reports_router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db)):
-    month_start = date.today().replace(day=1)
+def dashboard(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    month_start = date.today().replace(day=1); date_from = date_from or month_start; date_to = date_to or date.today()
     sales_today = db.scalar(select(func.coalesce(func.sum(SalesInvoice.grand_total), 0)).where(SalesInvoice.invoice_date == date.today(), SalesInvoice.status == "posted"))
-    sales_month = db.scalar(select(func.coalesce(func.sum(SalesInvoice.grand_total), 0)).where(SalesInvoice.invoice_date >= month_start, SalesInvoice.status == "posted"))
-    purchases_month = db.scalar(select(func.coalesce(func.sum(PurchaseInvoice.grand_total), 0)).where(PurchaseInvoice.invoice_date >= month_start, PurchaseInvoice.status == "posted"))
-    balances = {line["code"]: line["balance"] for line in _balances(db)}
+    sales_month = db.scalar(select(func.coalesce(func.sum(SalesInvoice.grand_total), 0)).where(SalesInvoice.invoice_date >= date_from, SalesInvoice.invoice_date <= date_to, SalesInvoice.status == "posted"))
+    purchases_month = db.scalar(select(func.coalesce(func.sum(PurchaseInvoice.grand_total), 0)).where(PurchaseInvoice.invoice_date >= date_from, PurchaseInvoice.invoice_date <= date_to, PurchaseInvoice.status == "posted"))
+    balances = {line["code"]: line["balance"] for line in _balances(db, date_from, date_to)}
     stock_rows = inventory_snapshot(db)
     revenue, cogs, expenses = balances.get("4000", 0) + balances.get("4010", 0), balances.get("5000", 0), balances.get("6000", 0) + balances.get("5100", 0)
     return {"sales_today": sales_today, "sales_month": sales_month, "purchases_month": purchases_month, "inventory_value": sum(row["value"] for row in stock_rows), "cash_balance": balances.get("1000", 0), "bank_balance": balances.get("1010", 0), "receivables": sum(invoice.due_amount for invoice in db.scalars(select(SalesInvoice).where(SalesInvoice.status == "posted"))), "payables": sum(invoice.due_amount for invoice in db.scalars(select(PurchaseInvoice).where(PurchaseInvoice.status == "posted"))), "gross_profit": revenue - cogs, "net_profit": revenue - cogs - expenses, "low_stock": [row for row in stock_rows if row["is_low_stock"]]}
 
 @reports_router.get("/trial-balance")
-def trial_balance(db: Session = Depends(get_db)):
-    return _balances(db)
+def trial_balance(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    return _balances(db, date_from, date_to)
 
 @reports_router.get("/trial-balance.csv")
-def trial_balance_csv(db: Session = Depends(get_db)):
+def trial_balance_csv(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Code", "Account", "Type", "Debit", "Credit", "Balance"])
-    for row in _balances(db):
+    for row in _balances(db, date_from, date_to):
         writer.writerow([row["code"], row["name"], row["type"], row["debit"], row["credit"], row["balance"]])
     return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="trial-balance.csv"'})
 
 @reports_router.get("/profit-loss")
-def profit_loss(db: Session = Depends(get_db)):
-    rows = _balances(db); revenue = [row for row in rows if row["type"] == "revenue"]; expenses = [row for row in rows if row["type"] == "expense"]
+def profit_loss(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    rows = _balances(db, date_from, date_to); revenue = [row for row in rows if row["type"] == "revenue"]; expenses = [row for row in rows if row["type"] == "expense"]
     return {"revenue": revenue, "expenses": expenses, "total_revenue": sum(row["balance"] for row in revenue), "total_expenses": sum(row["balance"] for row in expenses), "net_profit": sum(row["balance"] for row in revenue) - sum(row["balance"] for row in expenses)}
 
 @reports_router.get("/balance-sheet")
-def balance_sheet(db: Session = Depends(get_db)):
-    rows = _balances(db)
+def balance_sheet(date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    rows = _balances(db, None, date_to)
     grouped = {kind: [row for row in rows if row["type"] == kind] for kind in ("asset", "liability", "equity")}
     return {**grouped, "total_assets": sum(row["balance"] for row in grouped["asset"]), "total_liabilities": sum(row["balance"] for row in grouped["liability"]), "total_equity": sum(row["balance"] for row in grouped["equity"])}
+
+def _csv(filename: str, headers: list[str], rows: list[list]):
+    output = io.StringIO(); writer = csv.writer(output); writer.writerow(headers); writer.writerows(rows)
+    return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'})
+
+@reports_router.get("/profit-loss.csv")
+def profit_loss_csv(date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    report = profit_loss(date_from, date_to, db)
+    rows = [["Revenue", row["code"], row["name"], row["balance"]] for row in report["revenue"]] + [["Expense", row["code"], row["name"], row["balance"]] for row in report["expenses"]]
+    rows += [["", "", "Net profit", report["net_profit"]]]
+    return _csv("profit-loss", ["Section", "Code", "Account", "Balance"], rows)
+
+@reports_router.get("/balance-sheet.csv")
+def balance_sheet_csv(date_to: Optional[date] = None, db: Session = Depends(get_db)):
+    report = balance_sheet(date_to, db)
+    rows = [[kind.title(), row["code"], row["name"], row["balance"]] for kind in ("asset", "liability", "equity") for row in report[kind]]
+    return _csv("balance-sheet", ["Section", "Code", "Account", "Balance"], rows)
 
 @reports_router.get("/receivables")
 def receivables(db: Session = Depends(get_db)):
@@ -172,6 +196,27 @@ def create_tax_rate(payload: TaxRateCreate, db: Session = Depends(get_db)):
     if db.scalar(select(TaxRate).where(TaxRate.name == payload.name)):
         raise HTTPException(status_code=409, detail="Tax rate name already exists")
     record = TaxRate(**payload.model_dump()); db.add(record); db.commit(); db.refresh(record); return record
+
+@settings_router.get("/accounting-periods", dependencies=[accounting_access])
+def accounting_periods(db: Session = Depends(get_db)):
+    return list(db.scalars(select(AccountingPeriod).order_by(AccountingPeriod.start_date.desc())))
+
+@settings_router.post("/accounting-periods", status_code=status.HTTP_201_CREATED, dependencies=[admin_access])
+def create_accounting_period(payload: AccountingPeriodCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    overlap = db.scalar(select(AccountingPeriod).where(AccountingPeriod.start_date <= payload.end_date, AccountingPeriod.end_date >= payload.start_date))
+    if overlap: raise HTTPException(status_code=409, detail="Accounting period overlaps an existing period")
+    period = AccountingPeriod(**payload.model_dump(), closed_by_id=user.id if payload.is_closed else None)
+    db.add(period); db.commit(); db.refresh(period); return period
+
+@settings_router.put("/accounting-periods/{period_id}/close", dependencies=[admin_access])
+def close_accounting_period(period_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    period = db.get(AccountingPeriod, period_id)
+    if not period: raise HTTPException(status_code=404, detail="Accounting period was not found")
+    period.is_closed = True; period.closed_by_id = user.id; db.commit(); db.refresh(period); return period
+
+@settings_router.get("/audit-logs", dependencies=[admin_access])
+def audit_logs(limit: int = 200, db: Session = Depends(get_db)):
+    return list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(min(max(limit, 1), 500))))
 
 def _pdf_response(db: Session, invoice_model, item_model, invoice_id, party_model, party_field, title):
     invoice = db.get(invoice_model, invoice_id)

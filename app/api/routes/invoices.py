@@ -9,10 +9,11 @@ from app.models.auth import User, UserRole
 from app.models.invoices import PurchaseInvoice, PurchaseInvoiceItem, SalesInvoice, SalesInvoiceItem
 from app.schemas.invoices import InvoiceRead, PurchaseInvoiceCreate, SalesInvoiceCreate
 from app.schemas.payments import CustomerReceiptCreate, PaymentRead, SupplierPaymentCreate
-from app.schemas.returns import ReturnCreate
-from app.services.invoices import cancel_invoice, create_purchase, create_sale
+from app.schemas.returns import RefundCreate, ReturnCreate
+from app.services.invoices import cancel_invoice, create_purchase, create_sale, post_draft, save_draft
 from app.services.payments import pay_supplier, receive_customer_payment
-from app.services.returns import create_purchase_return, create_sales_return
+from app.services.returns import create_purchase_return, create_sales_return, refund_return
+from app.models.returns import ReturnType
 
 sales_router = APIRouter(prefix="/sales", tags=["sales"])
 purchases_router = APIRouter(prefix="/purchases", tags=["purchases"])
@@ -28,6 +29,18 @@ def invoice_response(invoice, item_model, fk_name: str) -> dict:
 @sales_router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[sales_access])
 def post_sale(payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return invoice_response(create_sale(db, payload, user.id), SalesInvoiceItem, "sales_invoice_id")
+
+@sales_router.post("/drafts", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[sales_access])
+def create_sale_draft(payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return invoice_response(save_draft(db, "sale", payload, user.id), SalesInvoiceItem, "sales_invoice_id")
+
+@sales_router.put("/{invoice_id}/draft", response_model=InvoiceRead, dependencies=[sales_access])
+def update_sale_draft(invoice_id: str, payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return invoice_response(save_draft(db, "sale", payload, user.id, invoice_id), SalesInvoiceItem, "sales_invoice_id")
+
+@sales_router.post("/{invoice_id}/post", response_model=InvoiceRead, dependencies=[sales_access])
+def post_sale_draft(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return invoice_response(post_draft(db, "sale", invoice_id, user.id), SalesInvoiceItem, "sales_invoice_id")
 
 @sales_router.get("", response_model=list[InvoiceRead], dependencies=[sales_access])
 def list_sales(limit: int = 50, offset: int = 0, q: Optional[str] = None, status_filter: Optional[str] = None, date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
@@ -47,6 +60,10 @@ def cancel_sale(invoice_id: str, db: Session = Depends(get_db), user: User = Dep
 def return_sale(invoice_id: str, payload: ReturnCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return create_sales_return(db, invoice_id, payload, user.id)
 
+@sales_router.post("/returns/{return_id}/refund", dependencies=[sales_access])
+def refund_sale_return(return_id: str, payload: RefundCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return refund_return(db, ReturnType.SALES_RETURN, return_id, payload, user.id)
+
 @sales_router.post("/payments", response_model=PaymentRead, status_code=status.HTTP_201_CREATED, dependencies=[sales_access])
 def receive_payment(payload: CustomerReceiptCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return receive_customer_payment(db, payload, user.id)
@@ -54,6 +71,18 @@ def receive_payment(payload: CustomerReceiptCreate, db: Session = Depends(get_db
 @purchases_router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[purchase_access])
 def post_purchase(payload: PurchaseInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return invoice_response(create_purchase(db, payload, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
+
+@purchases_router.post("/drafts", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[purchase_access])
+def create_purchase_draft(payload: PurchaseInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return invoice_response(save_draft(db, "purchase", payload, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
+
+@purchases_router.put("/{invoice_id}/draft", response_model=InvoiceRead, dependencies=[purchase_access])
+def update_purchase_draft(invoice_id: str, payload: PurchaseInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return invoice_response(save_draft(db, "purchase", payload, user.id, invoice_id), PurchaseInvoiceItem, "purchase_invoice_id")
+
+@purchases_router.post("/{invoice_id}/post", response_model=InvoiceRead, dependencies=[purchase_access])
+def post_purchase_draft(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return invoice_response(post_draft(db, "purchase", invoice_id, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
 
 @purchases_router.get("", response_model=list[InvoiceRead], dependencies=[purchase_access])
 def list_purchases(limit: int = 50, offset: int = 0, q: Optional[str] = None, status_filter: Optional[str] = None, date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
@@ -72,6 +101,10 @@ def cancel_purchase(invoice_id: str, db: Session = Depends(get_db), user: User =
 @purchases_router.post("/{invoice_id}/returns", dependencies=[purchase_access])
 def return_purchase(invoice_id: str, payload: ReturnCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return create_purchase_return(db, invoice_id, payload, user.id)
+
+@purchases_router.post("/returns/{return_id}/refund", dependencies=[purchase_access])
+def refund_purchase_return(return_id: str, payload: RefundCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return refund_return(db, ReturnType.PURCHASE_RETURN, return_id, payload, user.id)
 
 @purchases_router.post("/payments", response_model=PaymentRead, status_code=status.HTTP_201_CREATED, dependencies=[purchase_access])
 def pay_purchase(payload: SupplierPaymentCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
