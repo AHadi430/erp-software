@@ -5,8 +5,8 @@ import { InvoiceEntry } from "./InvoiceEntry";
 import { DashboardView, FinanceView, InventoryView, SettingsView } from "./OperationsViews";
 import { CustomerPerformanceView, InvoiceHistoryView, LedgerView, PartiesView, PaymentView, ReportsView, ReturnView, SupplierPerformanceView } from "./RecordsViews";
 
-type Screen = "dashboard" | "sales" | "purchases" | "inventory" | "customers" | "suppliers" | "finance" | "reports" | "settings" | "sales-history" | "purchase-history" | "customer-payments" | "supplier-payments" | "customer-ledger" | "supplier-ledger" | "customer-performance" | "supplier-performance" | "sales-returns" | "purchase-returns";
 type Module = "sales" | "purchases" | "inventory" | "customers" | "suppliers" | "finance" | "reports" | "settings";
+type Screen = "dashboard" | `${Module}-menu` | "sales" | "purchases" | "inventory" | "customers" | "suppliers" | "finance" | "reports" | "settings" | "sales-history" | "purchase-history" | "customer-payments" | "supplier-payments" | "customer-ledger" | "supplier-ledger" | "customer-performance" | "supplier-performance" | "sales-returns" | "purchase-returns";
 
 const moduleMeta: Record<Module, { title: string; description: string; icon: string }> = {
   sales: { title: "Sales", description: "Sell paint, receive payments and manage sales", icon: "▣" },
@@ -19,15 +19,6 @@ const moduleMeta: Record<Module, { title: string; description: string; icon: str
   settings: { title: "Settings", description: "Business details, users and configuration", icon: "⚙" },
 };
 
-const moduleScreens: Record<Module, Screen[]> = {
-  sales: ["sales", "sales-history", "sales-returns", "customer-payments"],
-  purchases: ["purchases", "purchase-history", "purchase-returns", "supplier-payments"],
-  inventory: ["inventory"],
-  customers: ["customers", "customer-payments", "customer-ledger", "customer-performance"],
-  suppliers: ["suppliers", "supplier-payments", "supplier-ledger", "supplier-performance"],
-  finance: ["finance"], reports: ["reports"], settings: ["settings"],
-};
-
 const allowedModules = (role: string): Module[] => {
   if (role === "admin") return ["sales", "purchases", "inventory", "customers", "suppliers", "finance", "reports", "settings"];
   if (role === "accountant") return ["sales", "purchases", "customers", "suppliers", "finance", "reports"];
@@ -35,14 +26,7 @@ const allowedModules = (role: string): Module[] => {
   return ["sales", "customers", "inventory"];
 };
 
-function Login({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
-  const mutation = useMutation({ mutationFn: () => login(email, password), onSuccess: ({ access_token }) => { localStorage.setItem("access_token", access_token); onLogin(); } });
-  const submit = (event: FormEvent) => { event.preventDefault(); mutation.mutate(); };
-  return <main className="login"><form onSubmit={submit}><div className="brand-mark">PS</div><h1>Paint Shop ERP</h1><p>Sign in to manage your business.</p><label>Email<input type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label><label>Password<input type="password" required value={password} onChange={e => setPassword(e.target.value)} /></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<button disabled={mutation.isPending}>{mutation.isPending ? "Signing in…" : "Sign in"}</button></form></main>;
-}
-
-const actions: Record<Module, { screen: Screen; label: string; description: string }[]> = {
+const actions: Record<Module, { screen: Exclude<Screen, "dashboard" | `${Module}-menu`>; label: string; description: string }[]> = {
   sales: [{ screen: "sales", label: "New Sale", description: "Create and post a customer invoice" }, { screen: "sales-history", label: "Sales History", description: "View, search and print invoices" }, { screen: "sales-returns", label: "Sales Returns", description: "Process returned customer goods" }, { screen: "customer-payments", label: "Receive Payment", description: "Record money received from customers" }],
   purchases: [{ screen: "purchases", label: "New Purchase", description: "Record a supplier purchase" }, { screen: "purchase-history", label: "Purchase History", description: "View and manage purchase invoices" }, { screen: "purchase-returns", label: "Purchase Returns", description: "Return goods to suppliers" }, { screen: "supplier-payments", label: "Pay Supplier", description: "Record payments to suppliers" }],
   inventory: [{ screen: "inventory", label: "Manage Inventory", description: "Products, stock and movement history" }],
@@ -53,9 +37,16 @@ const actions: Record<Module, { screen: Screen; label: string; description: stri
   settings: [{ screen: "settings", label: "Business Settings", description: "Business information and user administration" }],
 };
 
+function Login({ onLogin }: { onLogin: () => void }) {
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
+  const mutation = useMutation({ mutationFn: () => login(email, password), onSuccess: ({ access_token }) => { localStorage.setItem("access_token", access_token); onLogin(); } });
+  const submit = (event: FormEvent) => { event.preventDefault(); mutation.mutate(); };
+  return <main className="login"><form onSubmit={submit}><div className="brand-mark">PS</div><h1>Paint Shop ERP</h1><p>Sign in to manage your business.</p><label>Email<input type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label><label>Password<input type="password" required value={password} onChange={e => setPassword(e.target.value)} /></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<button disabled={mutation.isPending}>{mutation.isPending ? "Signing in…" : "Sign in"}</button></form></main>;
+}
+
 function ModuleMenu({ module, onNavigate, onBack }: { module: Module; onNavigate: (screen: Screen) => void; onBack: () => void }) {
   const meta = moduleMeta[module];
-  return <section className="module-page"><button className="back-button" onClick={onBack}>← Dashboard</button><div className="page-heading"><div className="module-icon large">{meta.icon}</div><div><p className="eyebrow">{meta.title.toUpperCase()}</p><h1>{meta.title}</h1><p>{meta.description}</p></div></div><div className="action-grid">{actions[module].map(action => <button className="action-card" key={action.screen} onClick={() => onNavigate(action.screen)}><span className="action-arrow">→</span><strong>{action.label}</strong><small>{action.description}</small></button>)}</div></section>;
+  return <section className="module-page"><button className="back-button" onClick={onBack}>← Dashboard</button><div className="page-heading"><div className="module-icon large">{meta.icon}</div><div><p className="eyebrow">{meta.title.toUpperCase()}</p><h1>{meta.title}</h1><p>{meta.description}</p></div></div><div className="action-grid">{actions[module].map(action => <button type="button" className="action-card" key={action.screen} onClick={() => onNavigate(action.screen)}><span className="action-arrow">→</span><strong>{action.label}</strong><small>{action.description}</small></button>)}</div></section>;
 }
 
 function Dashboard({ user }: { user: User }) {
@@ -63,11 +54,11 @@ function Dashboard({ user }: { user: User }) {
   const categories = useQuery({ queryKey: ["categories"], queryFn: () => request<Category[]>("/categories") });
   const addCategory = useMutation({ mutationFn: () => request<Category>("/categories", { method: "POST", body: JSON.stringify({ name }) }), onSuccess: () => { setName(""); queryClient.invalidateQueries({ queryKey: ["categories"] }); } });
   const modules = allowedModules(user.role);
-  const dashboard = <><DashboardView /><section className="quick-section"><div className="section-heading"><div><p className="eyebrow">QUICK ACCESS</p><h2>What would you like to do?</h2></div><span className="role-badge">{user.role.replace("_", " ")}</span></div><div className="module-grid">{modules.map(module => { const meta = moduleMeta[module]; return <button className="module-card" key={module} onClick={() => setScreen(module)}><span className="module-icon">{meta.icon}</span><span className="module-copy"><strong>{meta.title}</strong><small>{meta.description}</small></span><span className="module-arrow">→</span></button>; })}</div></section><section className="panel category-panel"><h2>Product categories</h2><p>Create the paint categories you sell.</p><form className="inline" onSubmit={e => { e.preventDefault(); if (name.trim()) addCategory.mutate(); }}><input aria-label="Category name" placeholder="e.g. Interior Emulsion" value={name} onChange={e => setName(e.target.value)} /><button disabled={addCategory.isPending}>Add category</button></form>{addCategory.error && <p className="error">{addCategory.error.message}</p>}{categories.isPending ? <p>Loading categories…</p> : <div className="category-list">{categories.data?.map(category => <span key={category.id}>{category.name}</span>)}</div>}</section></>;
-  const activeModule = (Object.keys(moduleMeta) as Module[]).find(item => item === screen || moduleScreens[item].includes(screen));
-  const isModuleMenu = (Object.keys(moduleMeta) as string[]).includes(screen);
-  const content = isModuleMenu ? <ModuleMenu module={screen as Module} onNavigate={setScreen} onBack={() => setScreen("dashboard")} /> : screen === "dashboard" ? dashboard : screen === "sales" ? <InvoiceEntry kind="sale" /> : screen === "purchases" ? <InvoiceEntry kind="purchase" /> : screen === "inventory" ? <InventoryView /> : screen === "settings" ? <SettingsView /> : screen === "finance" ? <FinanceView /> : screen === "customers" ? <PartiesView kind="customer" /> : screen === "suppliers" ? <PartiesView kind="supplier" /> : screen === "sales-history" ? <InvoiceHistoryView kind="sale" /> : screen === "purchase-history" ? <InvoiceHistoryView kind="purchase" /> : screen === "customer-payments" ? <PaymentView kind="customer" /> : screen === "supplier-payments" ? <PaymentView kind="supplier" /> : screen === "customer-ledger" ? <LedgerView kind="customer" /> : screen === "supplier-ledger" ? <LedgerView kind="supplier" /> : screen === "customer-performance" ? <CustomerPerformanceView /> : screen === "supplier-performance" ? <SupplierPerformanceView /> : screen === "reports" ? <ReportsView /> : screen === "sales-returns" ? <ReturnView kind="sale" /> : <ReturnView kind="purchase" />;
-  return <div className="app-shell"><header className="topbar"><button className="brand-button" onClick={() => setScreen("dashboard")}><span className="brand-mark small">PS</span><span>Paint Shop <b>ERP</b></span></button><div className="topbar-user"><div><strong>{user.full_name}</strong><small>{user.role.replace("_", " ")}</small></div><button className="secondary" onClick={() => { localStorage.removeItem("access_token"); location.reload(); }}>Sign out</button></div></header><main className="content">{!isModuleMenu && screen !== "dashboard" && <button className="back-button" onClick={() => setScreen(activeModule ?? "dashboard")}>← Back to {activeModule ? moduleMeta[activeModule].title : "Dashboard"}</button>}{content}</main></div>;
+  const dashboard = <><DashboardView /><section className="quick-section"><div className="section-heading"><div><p className="eyebrow">QUICK ACCESS</p><h2>What would you like to do?</h2></div><span className="role-badge">{user.role.replace("_", " ")}</span></div><div className="module-grid">{modules.map(module => { const meta = moduleMeta[module]; return <button type="button" className="module-card" key={module} onClick={() => setScreen(`${module}-menu`)}><span className="module-icon">{meta.icon}</span><span className="module-copy"><strong>{meta.title}</strong><small>{meta.description}</small></span><span className="module-arrow">→</span></button>; })}</div></section><section className="panel category-panel"><h2>Product categories</h2><p>Create the paint categories you sell.</p><form className="inline" onSubmit={e => { e.preventDefault(); if (name.trim()) addCategory.mutate(); }}><input aria-label="Category name" placeholder="e.g. Interior Emulsion" value={name} onChange={e => setName(e.target.value)} /><button type="submit" disabled={addCategory.isPending}>Add category</button></form>{addCategory.error && <p className="error">{addCategory.error.message}</p>}{categories.isPending ? <p>Loading categories…</p> : <div className="category-list">{categories.data?.map(category => <span key={category.id}>{category.name}</span>)}</div>}</section></>;
+  const activeModule = (Object.keys(moduleMeta) as Module[]).find(item => screen === `${item}-menu` || actions[item].some(action => action.screen === screen));
+  const isModuleMenu = screen.endsWith("-menu");
+  const content = isModuleMenu ? <ModuleMenu module={screen.replace("-menu", "") as Module} onNavigate={setScreen} onBack={() => setScreen("dashboard")} /> : screen === "dashboard" ? dashboard : screen === "sales" ? <InvoiceEntry kind="sale" /> : screen === "purchases" ? <InvoiceEntry kind="purchase" /> : screen === "inventory" ? <InventoryView /> : screen === "settings" ? <SettingsView /> : screen === "finance" ? <FinanceView /> : screen === "customers" ? <PartiesView kind="customer" /> : screen === "suppliers" ? <PartiesView kind="supplier" /> : screen === "sales-history" ? <InvoiceHistoryView kind="sale" /> : screen === "purchase-history" ? <InvoiceHistoryView kind="purchase" /> : screen === "customer-payments" ? <PaymentView kind="customer" /> : screen === "supplier-payments" ? <PaymentView kind="supplier" /> : screen === "customer-ledger" ? <LedgerView kind="customer" /> : screen === "supplier-ledger" ? <LedgerView kind="supplier" /> : screen === "customer-performance" ? <CustomerPerformanceView /> : screen === "supplier-performance" ? <SupplierPerformanceView /> : screen === "reports" ? <ReportsView /> : screen === "sales-returns" ? <ReturnView kind="sale" /> : <ReturnView kind="purchase" />;
+  return <div className="app-shell"><header className="topbar"><button type="button" className="brand-button" onClick={() => setScreen("dashboard")}><span className="brand-mark small">PS</span><span>Paint Shop <b>ERP</b></span></button><div className="topbar-user"><div><strong>{user.full_name}</strong><small>{user.role.replace("_", " ")}</small></div><button type="button" className="secondary" onClick={() => { localStorage.removeItem("access_token"); location.reload(); }}>Sign out</button></div></header><main className="content">{!isModuleMenu && screen !== "dashboard" && <button type="button" className="back-button" onClick={() => setScreen(activeModule ? `${activeModule}-menu` : "dashboard")}>← Back to {activeModule ? moduleMeta[activeModule].title : "Dashboard"}</button>}{content}</main></div>;
 }
 
 export function App() {
