@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+from typing import Optional
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,14 +28,13 @@ def _month_keys() -> list[str]:
     return [f"{today.year if today.month - offset > 0 else today.year - 1}-{((today.month - offset - 1) % 12) + 1:02d}" for offset in range(11, -1, -1)]
 
 
-def customer_performance(db: Session, customer_id=None):
+def customer_performance(db: Session, customer_id: Optional[str] = None):
     customers = list(db.scalars(select(Customer).where(Customer.is_active.is_(True)).order_by(Customer.name)))
     if customer_id:
         customers = [customer for customer in customers if str(customer.id) == str(customer_id)]
     result = {str(customer.id): {"id": str(customer.id), "name": customer.name, "phone": customer.phone, "invoice_count": 0, "quantity": ZERO, "gross_sales": ZERO, "returns": ZERO, "net_sales": ZERO, "cogs": ZERO, "gross_profit": ZERO, "margin_pct": ZERO, "current_due": ZERO, "payments_received": ZERO, "monthly": defaultdict(lambda: ZERO), "yearly": defaultdict(lambda: ZERO)} for customer in customers}
     if not result:
         return []
-
     invoices = db.scalars(select(SalesInvoice).where(SalesInvoice.status == InvoiceStatus.POSTED)).all()
     for invoice in invoices:
         key = str(invoice.customer_id) if invoice.customer_id else None
@@ -52,10 +52,9 @@ def customer_performance(db: Session, customer_id=None):
             row["net_sales"] += net
             row["cogs"] += cogs
             row["gross_profit"] += net - cogs
-            key_month = invoice.invoice_date.strftime("%Y-%m")
-            row["monthly"][key_month] += net
+            month = invoice.invoice_date.strftime("%Y-%m")
+            row["monthly"][month] += net
             row["yearly"][str(invoice.invoice_date.year)] += net
-
     returns = db.scalars(select(ReturnDocument).where(ReturnDocument.return_type == ReturnType.SALES_RETURN)).all()
     for document in returns:
         invoice = db.get(SalesInvoice, document.sales_invoice_id)
@@ -72,23 +71,20 @@ def customer_performance(db: Session, customer_id=None):
             row["cogs"] -= cogs
             row["gross_profit"] -= net - cogs
             row["quantity"] -= Decimal(item.quantity or 0)
-            key_month = document.return_date.strftime("%Y-%m")
-            row["monthly"][key_month] -= net
+            month = document.return_date.strftime("%Y-%m")
+            row["monthly"][month] -= net
             row["yearly"][str(document.return_date.year)] -= net
-
     payments = db.scalars(select(Payment).where(Payment.direction == "receipt", Payment.customer_id.is_not(None))).all()
     for payment in payments:
         key = str(payment.customer_id)
         if key in result:
             result[key]["payments_received"] += Decimal(payment.amount or 0)
-
     months = _month_keys()
     output = []
     for row in result.values():
         row["gross_profit"] = _money(row["gross_profit"])
         row["margin_pct"] = _money((row["gross_profit"] / row["net_sales"] * 100) if row["net_sales"] else ZERO)
-        row["current_due"] = _money(row["current_due"])
-        for field in ("gross_sales", "returns", "net_sales", "cogs", "payments_received"):
+        for field in ("gross_sales", "returns", "net_sales", "cogs", "payments_received", "current_due"):
             row[field] = _money(row[field])
         row["quantity"] = _money(row["quantity"])
         row["monthly"] = [{"month": month, "volume": _money(row["monthly"][month])} for month in months]
@@ -97,14 +93,13 @@ def customer_performance(db: Session, customer_id=None):
     return output
 
 
-def supplier_performance(db: Session, supplier_id=None):
+def supplier_performance(db: Session, supplier_id: Optional[str] = None):
     suppliers = list(db.scalars(select(Supplier).where(Supplier.is_active.is_(True)).order_by(Supplier.name)))
     if supplier_id:
         suppliers = [supplier for supplier in suppliers if str(supplier.id) == str(supplier_id)]
     result = {str(supplier.id): {"id": str(supplier.id), "name": supplier.name, "phone": supplier.phone, "invoice_count": 0, "quantity": ZERO, "gross_purchases": ZERO, "returns": ZERO, "net_purchases": ZERO, "current_due": ZERO, "payments_made": ZERO, "monthly": defaultdict(lambda: ZERO), "yearly": defaultdict(lambda: ZERO)} for supplier in suppliers}
     if not result:
         return []
-
     invoices = db.scalars(select(PurchaseInvoice).where(PurchaseInvoice.status == InvoiceStatus.POSTED)).all()
     for invoice in invoices:
         key = str(invoice.supplier_id)
@@ -122,7 +117,6 @@ def supplier_performance(db: Session, supplier_id=None):
             month = invoice.invoice_date.strftime("%Y-%m")
             row["monthly"][month] += net
             row["yearly"][str(invoice.invoice_date.year)] += net
-
     returns = db.scalars(select(ReturnDocument).where(ReturnDocument.return_type == ReturnType.PURCHASE_RETURN)).all()
     for document in returns:
         invoice = db.get(PurchaseInvoice, document.purchase_invoice_id)
@@ -139,13 +133,11 @@ def supplier_performance(db: Session, supplier_id=None):
             month = document.return_date.strftime("%Y-%m")
             row["monthly"][month] -= net
             row["yearly"][str(document.return_date.year)] -= net
-
     payments = db.scalars(select(Payment).where(Payment.direction == "disbursement", Payment.supplier_id.is_not(None))).all()
     for payment in payments:
         key = str(payment.supplier_id)
         if key in result:
             result[key]["payments_made"] += Decimal(payment.amount or 0)
-
     months = _month_keys()
     output = []
     for row in result.values():
@@ -159,10 +151,10 @@ def supplier_performance(db: Session, supplier_id=None):
 
 
 @router.get("/customer-performance")
-def customer_performance_report(customer_id: str | None = None, db: Session = Depends(get_db)):
+def customer_performance_report(customer_id: Optional[str] = None, db: Session = Depends(get_db)):
     return customer_performance(db, customer_id)
 
 
 @router.get("/supplier-performance")
-def supplier_performance_report(supplier_id: str | None = None, db: Session = Depends(get_db)):
+def supplier_performance_report(supplier_id: Optional[str] = None, db: Session = Depends(get_db)):
     return supplier_performance(db, supplier_id)
