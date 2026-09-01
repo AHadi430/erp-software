@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.invoices import PurchaseInvoice, SalesInvoice
@@ -14,8 +14,18 @@ from app.services.governance import audit, ensure_open_period
 def _cash_account(accounts, method: PaymentMethod):
     return accounts["1010"] if method == PaymentMethod.BANK_TRANSFER else accounts["1000"]
 
+
+def _validate_allocations(amount, allocations):
+    total = money(sum((Decimal(item.amount) for item in allocations), ZERO))
+    if total != money(amount):
+        raise HTTPException(status_code=422, detail="Payment amount must exactly equal the total allocated to invoices")
+    if not allocations:
+        raise HTTPException(status_code=422, detail="At least one invoice allocation is required")
+
+
 def receive_customer_payment(db: Session, payload, user_id):
     ensure_open_period(db, payload.payment_date)
+    _validate_allocations(payload.amount, payload.allocations)
     with db.begin_nested():
         if not db.get(Customer, payload.customer_id):
             raise HTTPException(status_code=404, detail="Customer was not found")
@@ -24,9 +34,9 @@ def receive_customer_payment(db: Session, payload, user_id):
         db.add(payment); db.flush()
         for allocation in payload.allocations:
             invoice = db.scalar(select(SalesInvoice).where(SalesInvoice.id == allocation.invoice_id).with_for_update())
-            if not invoice or invoice.customer_id != payload.customer_id:
-                raise HTTPException(status_code=422, detail="Each allocation must reference one of this customer's sales invoices")
-            if invoice.due_amount < allocation.amount:
+            if not invoice or invoice.customer_id != payload.customer_id or invoice.status.value != "posted":
+                raise HTTPException(status_code=422, detail="Each allocation must reference a posted sales invoice for this customer")
+            if invoice.due_amount <= ZERO or invoice.due_amount < allocation.amount:
                 raise HTTPException(status_code=422, detail=f"Allocation exceeds the outstanding amount on {invoice.invoice_number}")
             invoice.paid_amount = money(invoice.paid_amount + allocation.amount)
             invoice.due_amount = money(invoice.due_amount - allocation.amount)
@@ -38,6 +48,7 @@ def receive_customer_payment(db: Session, payload, user_id):
 
 def pay_supplier(db: Session, payload, user_id):
     ensure_open_period(db, payload.payment_date)
+    _validate_allocations(payload.amount, payload.allocations)
     with db.begin_nested():
         if not db.get(Supplier, payload.supplier_id):
             raise HTTPException(status_code=404, detail="Supplier was not found")
@@ -46,9 +57,9 @@ def pay_supplier(db: Session, payload, user_id):
         db.add(payment); db.flush()
         for allocation in payload.allocations:
             invoice = db.scalar(select(PurchaseInvoice).where(PurchaseInvoice.id == allocation.invoice_id).with_for_update())
-            if not invoice or invoice.supplier_id != payload.supplier_id:
-                raise HTTPException(status_code=422, detail="Each allocation must reference one of this supplier's purchase invoices")
-            if invoice.due_amount < allocation.amount:
+            if not invoice or invoice.supplier_id != payload.supplier_id or invoice.status.value != "posted":
+                raise HTTPException(status_code=422, detail="Each allocation must reference a posted purchase invoice for this supplier")
+            if invoice.due_amount <= ZERO or invoice.due_amount < allocation.amount:
                 raise HTTPException(status_code=422, detail=f"Allocation exceeds the outstanding amount on {invoice.invoice_number}")
             invoice.paid_amount = money(invoice.paid_amount + allocation.amount)
             invoice.due_amount = money(invoice.due_amount - allocation.amount)
