@@ -73,12 +73,30 @@ def calculate_line(quantity: Decimal, unit_price: Decimal, discount: Decimal, ta
     net = money(after_discount - tax) if tax_inclusive else after_discount
     return gross, net, tax, after_discount if tax_inclusive else money(after_discount + tax)
 
+def validate_token_line(quantity: Decimal, included: bool, value: Decimal):
+    if not included:
+        return
+    if quantity != quantity.to_integral_value():
+        raise HTTPException(status_code=422, detail="Token-bearing paint quantity must be a whole number")
+    if value <= ZERO:
+        raise HTTPException(status_code=422, detail="Token value must be greater than zero for a token-bearing line")
+
 def create_sale(db: Session, payload, user_id, invoice_number: Optional[str] = None):
     ensure_open_period(db, payload.invoice_date)
     if payload.paid_amount > ZERO and payload.payment_method is None:
         raise HTTPException(status_code=422, detail="A payment method is required for a received amount")
-    # Current-user authentication may already have opened the request transaction.
-    # A savepoint keeps invoice posting atomic without assuming a pristine Session.
+    token_to_issue = ZERO
+    for item in payload.items:
+        token_included = bool(getattr(item, "token_included", False))
+        token_value = Decimal(getattr(item, "token_value", ZERO) or ZERO)
+        validate_token_line(Decimal(item.quantity), token_included, token_value)
+        if token_included:
+            token_to_issue += Decimal(item.quantity)
+    if token_to_issue:
+        from app.services.tokens import token_inventory
+        available_tokens = Decimal(str(token_inventory(db)["available"]))
+        if token_to_issue > available_tokens:
+            raise HTTPException(status_code=422, detail=f"Only {available_tokens} whole tokens are available to issue")
     with db.begin_nested():
         if payload.customer_id and not db.get(Customer, payload.customer_id):
             raise HTTPException(status_code=404, detail="Customer was not found")
@@ -89,14 +107,13 @@ def create_sale(db: Session, payload, user_id, invoice_number: Optional[str] = N
             product, tax_rate = resolve_product_and_rate(db, item)
             if available_stock(db, product.id) < item.quantity:
                 raise HTTPException(status_code=422, detail=f"Insufficient stock for {product.name}")
-            # Sales always use the current configured selling price. The client
-            # only supplies quantity/discount; this prevents price drift between
-            # the inventory catalog and posted invoices.
             price = product.selling_price
             gross, net, tax, line_total = calculate_line(item.quantity, price, item.discount_amount, tax_rate, payload.tax_inclusive)
             sale_unit_cost = average_inventory_cost(db, product.id)
             cost = money(item.quantity * sale_unit_cost)
-            db.add(SalesInvoiceItem(sales_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, unit_cost=sale_unit_cost, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total))
+            token_included = bool(getattr(item, "token_included", False))
+            token_value = Decimal(getattr(item, "token_value", ZERO) or ZERO) if token_included else ZERO
+            db.add(SalesInvoiceItem(sales_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, unit_cost=sale_unit_cost, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total, token_included=token_included, token_value=token_value))
             db.add(StockMovement(product_id=product.id, movement_type=StockMovementType.SALE, quantity=-item.quantity, unit_cost=sale_unit_cost, reference_type="sales_invoice", reference_id=str(invoice.id), occurred_on=payload.invoice_date, created_by_id=user_id))
             product.cost_price = sale_unit_cost
             subtotal += gross; discount_total += item.discount_amount; revenue += net; tax_total += tax; cost_total += cost
@@ -129,11 +146,14 @@ def create_purchase(db: Session, payload, user_id, invoice_number: Optional[str]
             product, tax_rate = resolve_product_and_rate(db, item)
             if item.unit_price is None:
                 raise HTTPException(status_code=422, detail="Purchase line unit price is required")
+            token_included = bool(getattr(item, "token_included", False))
+            token_value = Decimal(getattr(item, "token_value", ZERO) or ZERO) if token_included else ZERO
+            validate_token_line(Decimal(item.quantity), token_included, token_value)
             gross, net, tax, line_total = calculate_line(item.quantity, item.unit_price, item.discount_amount, tax_rate, payload.tax_inclusive)
             unit_cost = money(net / item.quantity)
             existing_quantity = available_stock(db, product.id)
             existing_value = inventory_value(db, product.id)
-            db.add(PurchaseInvoiceItem(purchase_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=item.unit_price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total))
+            db.add(PurchaseInvoiceItem(purchase_invoice_id=invoice.id, product_id=product.id, description=product.name, quantity=item.quantity, unit_price=item.unit_price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total, token_included=token_included, token_value=token_value))
             db.add(StockMovement(product_id=product.id, movement_type=StockMovementType.PURCHASE, quantity=item.quantity, unit_cost=unit_cost, reference_type="purchase_invoice", reference_id=str(invoice.id), occurred_on=payload.invoice_date, created_by_id=user_id))
             product.cost_price = money((existing_value + (item.quantity * unit_cost)) / (existing_quantity + item.quantity)) if existing_quantity + item.quantity > ZERO else unit_cost
             subtotal += gross; discount_total += item.discount_amount; inventory_total += net; tax_total += tax
@@ -174,8 +194,11 @@ def save_draft(db: Session, invoice_type: str, payload, user_id, invoice_id=None
             product, tax_rate = resolve_product_and_rate(db, item)
             price = product.selling_price if invoice_type == "sale" else item.unit_price
             if price is None: raise HTTPException(status_code=422, detail="Purchase line unit price is required")
+            token_included = bool(getattr(item, "token_included", False))
+            token_value = Decimal(getattr(item, "token_value", ZERO) or ZERO) if token_included else ZERO
+            validate_token_line(Decimal(item.quantity), token_included, token_value)
             gross, net, tax, line_total = calculate_line(item.quantity, price, item.discount_amount, tax_rate, payload.tax_inclusive)
-            values = dict(product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total)
+            values = dict(product_id=product.id, description=product.name, quantity=item.quantity, unit_price=price, discount_amount=item.discount_amount, tax_rate=tax_rate, tax_amount=tax, line_total=line_total, token_included=token_included, token_value=token_value)
             if invoice_type == "sale": values.update(sales_invoice_id=invoice.id, unit_cost=ZERO)
             else: values.update(purchase_invoice_id=invoice.id)
             db.add(item_model(**values)); subtotal += gross; discount += item.discount_amount; tax_total += tax; net_total += net
@@ -190,7 +213,7 @@ def post_draft(db: Session, invoice_type: str, invoice_id, user_id):
     invoice = db.get(invoice_model, invoice_id)
     if not invoice or invoice.status != InvoiceStatus.DRAFT: raise HTTPException(status_code=422, detail="Only a draft invoice can be posted")
     items = list(db.scalars(select(item_model).where(getattr(item_model, item_fk) == invoice.id)))
-    payload = SimpleNamespace(**{party_field: getattr(invoice, party_field), "invoice_date": invoice.invoice_date, "payment_method": invoice.payment_method, "paid_amount": ZERO, "tax_inclusive": invoice.tax_inclusive, "notes": invoice.notes, "items": [SimpleNamespace(product_id=x.product_id, quantity=x.quantity, unit_price=x.unit_price, discount_amount=x.discount_amount, tax_rate=x.tax_rate) for x in items], **({"supplier_invoice_number": invoice.supplier_invoice_number} if invoice_type == "purchase" else {})})
+    payload = SimpleNamespace(**{party_field: getattr(invoice, party_field), "invoice_date": invoice.invoice_date, "payment_method": invoice.payment_method, "paid_amount": ZERO, "tax_inclusive": invoice.tax_inclusive, "notes": invoice.notes, "items": [SimpleNamespace(product_id=x.product_id, quantity=x.quantity, unit_price=x.unit_price, discount_amount=x.discount_amount, tax_rate=x.tax_rate, token_included=x.token_included, token_value=x.token_value) for x in items], **({"supplier_invoice_number": invoice.supplier_invoice_number} if invoice_type == "purchase" else {})})
     number = invoice.invoice_number
     db.delete(invoice); db.flush()
     return create_sale(db, payload, user_id, number) if invoice_type == "sale" else create_purchase(db, payload, user_id, number)
@@ -213,7 +236,7 @@ def cancel_invoice(db: Session, invoice_type: str, invoice_id, user_id):
             raise HTTPException(status_code=409, detail="Invoice has no journal entry to reverse")
         accounts = {account.id: account for account in db.scalars(select(Account).where(Account.id.in_([line.account_id for line in original_lines])))}
         reversal_lines = [(accounts[line.account_id], line.credit, line.debit, f"Cancellation of {invoice.invoice_number}") for line in original_lines]
-        entry = post_journal(db, entry_date=invoice.invoice_date, source_type=source_type, source_id=str(invoice.id), memo=f"Cancellation of {invoice.invoice_number}", user_id=user_id, lines=reversal_lines)
+        post_journal(db, entry_date=invoice.invoice_date, source_type=source_type, source_id=str(invoice.id), memo=f"Cancellation of {invoice.invoice_number}", user_id=user_id, lines=reversal_lines)
         invoice.status = InvoiceStatus.CANCELLED
         invoice.due_amount = ZERO
         fk_name = "sales_invoice_id" if invoice_type == "sale" else "purchase_invoice_id"

@@ -1,0 +1,5 @@
+.quick-inventory { position: relative; }
+.autocomplete-list { position: absolute; z-index: 20; left: 0; right: 0; top: 100%; background: white; border: 1px solid #d7dce3; border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,.12); max-height: 280px; overflow: auto; }
+.autocomplete-list button { display: flex; width: 100%; text-align: left; gap: 4px; flex-direction: column; padding: 10px 12px; border: 0; background: white; cursor: pointer; }
+.autocomplete-list button:hover { background: #f3f6fa; }
+.autocomplete-list small { opacity: .65; }
