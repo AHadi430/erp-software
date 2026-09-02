@@ -20,24 +20,27 @@ purchases_router = APIRouter(prefix="/purchases", tags=["purchases"])
 sales_access = Depends(require_roles(UserRole.ADMIN, UserRole.SALESPERSON, UserRole.ACCOUNTANT))
 purchase_access = Depends(require_roles(UserRole.ADMIN, UserRole.INVENTORY_MANAGER, UserRole.ACCOUNTANT))
 def invoice_response(invoice, item_model, fk_name: str) -> dict:
-    data = {column.name: getattr(invoice, column.name) for column in invoice.__table__.columns}
-    data["status"] = invoice.status.value
+    data = {column.name: getattr(invoice, column.name) for column in invoice.__table__.columns}; data["status"] = invoice.status.value
     data["items"] = list(invoice._sa_instance_state.session.scalars(select(item_model).where(getattr(item_model, fk_name) == invoice.id)))
     return data
+def token_payload_for_rows(rows, payload_items):
+    return [{"line_id": str(row.id), "token_included": item.token_included, "token_value": item.token_value} for row, item in zip(rows, payload_items)]
 @sales_router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[sales_access])
 def post_sale(payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     invoice = create_sale(db, payload, user.id)
-    apply_invoice_tokens(db, "sale", invoice.id, [{"line_id": str(line.id), "token_included": item.token_included, "token_value": item.token_value} for line, item in zip(list(db.scalars(select(SalesInvoiceItem).where(SalesInvoiceItem.sales_invoice_id == invoice.id))), payload.items)])
+    rows = list(db.scalars(select(SalesInvoiceItem).where(SalesInvoiceItem.sales_invoice_id == invoice.id)))
+    apply_invoice_tokens(db, "sale", invoice.id, token_payload_for_rows(rows, payload.items))
     return invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id")
 @sales_router.post("/drafts", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[sales_access])
 def create_sale_draft(payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(save_draft(db, "sale", payload, user.id), SalesInvoiceItem, "sales_invoice_id")
+    invoice = save_draft(db, "sale", payload, user.id); rows = list(db.scalars(select(SalesInvoiceItem).where(SalesInvoiceItem.sales_invoice_id == invoice.id))); apply_invoice_tokens(db, "sale", invoice.id, token_payload_for_rows(rows, payload.items)); return invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id")
 @sales_router.put("/{invoice_id}/draft", response_model=InvoiceRead, dependencies=[sales_access])
 def update_sale_draft(invoice_id: str, payload: SalesInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(save_draft(db, "sale", payload, user.id, invoice_id), SalesInvoiceItem, "sales_invoice_id")
+    invoice = save_draft(db, "sale", payload, user.id, invoice_id); rows = list(db.scalars(select(SalesInvoiceItem).where(SalesInvoiceItem.sales_invoice_id == invoice.id))); apply_invoice_tokens(db, "sale", invoice.id, token_payload_for_rows(rows, payload.items)); return invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id")
 @sales_router.post("/{invoice_id}/post", response_model=InvoiceRead, dependencies=[sales_access])
 def post_sale_draft(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(post_draft(db, "sale", invoice_id, user.id), SalesInvoiceItem, "sales_invoice_id")
+    draft_rows = list(db.scalars(select(SalesInvoiceItem).where(SalesInvoiceItem.sales_invoice_id == invoice_id))); token_flags = [{"token_included": row.token_included, "token_value": row.token_value} for row in draft_rows]
+    invoice = post_draft(db, "sale", invoice_id, user.id); rows = list(db.scalars(select(SalesInvoiceItem).where(SalesInvoiceItem.sales_invoice_id == invoice.id))); apply_invoice_tokens(db, "sale", invoice.id, [{"line_id": str(row.id), **flag} for row, flag in zip(rows, token_flags)]); return invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id")
 @sales_router.get("", response_model=list[InvoiceRead], dependencies=[sales_access])
 def list_sales(limit: int = 50, offset: int = 0, q: Optional[str] = None, status_filter: Optional[str] = None, date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
     query = select(SalesInvoice).order_by(SalesInvoice.invoice_date.desc()).limit(min(max(limit, 1), 200)).offset(max(offset, 0))
@@ -45,34 +48,28 @@ def list_sales(limit: int = 50, offset: int = 0, q: Optional[str] = None, status
     if status_filter: query = query.where(SalesInvoice.status == status_filter)
     if date_from: query = query.where(SalesInvoice.invoice_date >= date_from)
     if date_to: query = query.where(SalesInvoice.invoice_date <= date_to)
-    invoices = db.scalars(query)
-    return [invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id") for invoice in invoices]
+    return [invoice_response(invoice, SalesInvoiceItem, "sales_invoice_id") for invoice in db.scalars(query)]
 @sales_router.post("/{invoice_id}/cancel", response_model=InvoiceRead, dependencies=[sales_access])
-def cancel_sale(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(cancel_invoice(db, "sale", invoice_id, user.id), SalesInvoiceItem, "sales_invoice_id")
+def cancel_sale(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return invoice_response(cancel_invoice(db, "sale", invoice_id, user.id), SalesInvoiceItem, "sales_invoice_id")
 @sales_router.post("/{invoice_id}/returns", dependencies=[sales_access])
-def return_sale(invoice_id: str, payload: ReturnCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return create_sales_return(db, invoice_id, payload, user.id)
+def return_sale(invoice_id: str, payload: ReturnCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return create_sales_return(db, invoice_id, payload, user.id)
 @sales_router.post("/returns/{return_id}/refund", dependencies=[sales_access])
-def refund_sale_return(return_id: str, payload: RefundCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return refund_return(db, ReturnType.SALES_RETURN, return_id, payload, user.id)
+def refund_sale_return(return_id: str, payload: RefundCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return refund_return(db, ReturnType.SALES_RETURN, return_id, payload, user.id)
 @sales_router.post("/payments", response_model=PaymentRead, status_code=status.HTTP_201_CREATED, dependencies=[sales_access])
-def receive_payment(payload: CustomerReceiptCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return receive_customer_payment(db, payload, user.id)
+def receive_payment(payload: CustomerReceiptCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return receive_customer_payment(db, payload, user.id)
 @purchases_router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[purchase_access])
 def post_purchase(payload: PurchaseInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    invoice = create_purchase(db, payload, user.id)
-    apply_invoice_tokens(db, "purchase", invoice.id, [{"line_id": str(line.id), "token_included": item.token_included, "token_value": item.token_value} for line, item in zip(list(db.scalars(select(PurchaseInvoiceItem).where(PurchaseInvoiceItem.purchase_invoice_id == invoice.id))), payload.items)])
-    return invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id")
+    invoice = create_purchase(db, payload, user.id); rows = list(db.scalars(select(PurchaseInvoiceItem).where(PurchaseInvoiceItem.purchase_invoice_id == invoice.id))); apply_invoice_tokens(db, "purchase", invoice.id, token_payload_for_rows(rows, payload.items)); return invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id")
 @purchases_router.post("/drafts", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED, dependencies=[purchase_access])
 def create_purchase_draft(payload: PurchaseInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(save_draft(db, "purchase", payload, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
+    invoice = save_draft(db, "purchase", payload, user.id); rows = list(db.scalars(select(PurchaseInvoiceItem).where(PurchaseInvoiceItem.purchase_invoice_id == invoice.id))); apply_invoice_tokens(db, "purchase", invoice.id, token_payload_for_rows(rows, payload.items)); return invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id")
 @purchases_router.put("/{invoice_id}/draft", response_model=InvoiceRead, dependencies=[purchase_access])
 def update_purchase_draft(invoice_id: str, payload: PurchaseInvoiceCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(save_draft(db, "purchase", payload, user.id, invoice_id), PurchaseInvoiceItem, "purchase_invoice_id")
+    invoice = save_draft(db, "purchase", payload, user.id, invoice_id); rows = list(db.scalars(select(PurchaseInvoiceItem).where(PurchaseInvoiceItem.purchase_invoice_id == invoice.id))); apply_invoice_tokens(db, "purchase", invoice.id, token_payload_for_rows(rows, payload.items)); return invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id")
 @purchases_router.post("/{invoice_id}/post", response_model=InvoiceRead, dependencies=[purchase_access])
 def post_purchase_draft(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(post_draft(db, "purchase", invoice_id, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
+    draft_rows = list(db.scalars(select(PurchaseInvoiceItem).where(PurchaseInvoiceItem.purchase_invoice_id == invoice_id))); token_flags = [{"token_included": row.token_included, "token_value": row.token_value} for row in draft_rows]
+    invoice = post_draft(db, "purchase", invoice_id, user.id); rows = list(db.scalars(select(PurchaseInvoiceItem).where(PurchaseInvoiceItem.purchase_invoice_id == invoice.id))); apply_invoice_tokens(db, "purchase", invoice.id, [{"line_id": str(row.id), **flag} for row, flag in zip(rows, token_flags)]); return invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id")
 @purchases_router.get("", response_model=list[InvoiceRead], dependencies=[purchase_access])
 def list_purchases(limit: int = 50, offset: int = 0, q: Optional[str] = None, status_filter: Optional[str] = None, date_from: Optional[date] = None, date_to: Optional[date] = None, db: Session = Depends(get_db)):
     query = select(PurchaseInvoice).order_by(PurchaseInvoice.invoice_date.desc()).limit(min(max(limit, 1), 200)).offset(max(offset, 0))
@@ -80,17 +77,12 @@ def list_purchases(limit: int = 50, offset: int = 0, q: Optional[str] = None, st
     if status_filter: query = query.where(PurchaseInvoice.status == status_filter)
     if date_from: query = query.where(PurchaseInvoice.invoice_date >= date_from)
     if date_to: query = query.where(PurchaseInvoice.invoice_date <= date_to)
-    invoices = db.scalars(query)
-    return [invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id") for invoice in invoices]
+    return [invoice_response(invoice, PurchaseInvoiceItem, "purchase_invoice_id") for invoice in db.scalars(query)]
 @purchases_router.post("/{invoice_id}/cancel", response_model=InvoiceRead, dependencies=[purchase_access])
-def cancel_purchase(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return invoice_response(cancel_invoice(db, "purchase", invoice_id, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
+def cancel_purchase(invoice_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return invoice_response(cancel_invoice(db, "purchase", invoice_id, user.id), PurchaseInvoiceItem, "purchase_invoice_id")
 @purchases_router.post("/{invoice_id}/returns", dependencies=[purchase_access])
-def return_purchase(invoice_id: str, payload: ReturnCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return create_purchase_return(db, invoice_id, payload, user.id)
+def return_purchase(invoice_id: str, payload: ReturnCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return create_purchase_return(db, invoice_id, payload, user.id)
 @purchases_router.post("/returns/{return_id}/refund", dependencies=[purchase_access])
-def refund_purchase_return(return_id: str, payload: RefundCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return refund_return(db, ReturnType.PURCHASE_RETURN, return_id, payload, user.id)
+def refund_purchase_return(return_id: str, payload: RefundCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return refund_return(db, ReturnType.PURCHASE_RETURN, return_id, payload, user.id)
 @purchases_router.post("/payments", response_model=PaymentRead, status_code=status.HTTP_201_CREATED, dependencies=[purchase_access])
-def pay_purchase(payload: SupplierPaymentCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return pay_supplier(db, payload, user.id)
+def pay_purchase(payload: SupplierPaymentCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)): return pay_supplier(db, payload, user.id)
