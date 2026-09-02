@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import enum
 import uuid
 from datetime import date
@@ -10,14 +9,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database.base import Base
 from app.models.common import UUIDTimestampMixin
 from app.models.operations import PaymentMethod
-
-
 class InvoiceStatus(str, enum.Enum):
     DRAFT = "draft"
     POSTED = "posted"
     CANCELLED = "cancelled"
-
-
 class SalesInvoice(UUIDTimestampMixin, Base):
     __tablename__ = "sales_invoices"
     invoice_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
@@ -36,8 +31,6 @@ class SalesInvoice(UUIDTimestampMixin, Base):
     journal_entry_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("journal_entries.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-
-
 class SalesInvoiceItem(UUIDTimestampMixin, Base):
     __tablename__ = "sales_invoice_items"
     sales_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_invoices.id", ondelete="CASCADE"), index=True)
@@ -50,8 +43,8 @@ class SalesInvoiceItem(UUIDTimestampMixin, Base):
     tax_rate: Mapped[Decimal] = mapped_column(Numeric(7, 4), default=Decimal("0"))
     tax_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
-
-
+    token_included: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_value: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
 class PurchaseInvoice(UUIDTimestampMixin, Base):
     __tablename__ = "purchase_invoices"
     invoice_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
@@ -71,8 +64,6 @@ class PurchaseInvoice(UUIDTimestampMixin, Base):
     journal_entry_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("journal_entries.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-
-
 class PurchaseInvoiceItem(UUIDTimestampMixin, Base):
     __tablename__ = "purchase_invoice_items"
     purchase_invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_invoices.id", ondelete="CASCADE"), index=True)
@@ -84,3 +75,5 @@ class PurchaseInvoiceItem(UUIDTimestampMixin, Base):
     tax_rate: Mapped[Decimal] = mapped_column(Numeric(7, 4), default=Decimal("0"))
     tax_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    token_included: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_value: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
