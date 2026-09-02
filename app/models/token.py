@@ -21,7 +21,7 @@ class TokenClaim(UUIDTimestampMixin, Base):
     claim_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
     painter_name: Mapped[str] = mapped_column(String(180), index=True)
     painter_phone: Mapped[Optional[str]] = mapped_column(String(40))
-    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 0))
     token_value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     status: Mapped[TokenClaimStatus] = mapped_column(Enum(TokenClaimStatus), default=TokenClaimStatus.PENDING, index=True)
