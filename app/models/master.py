@@ -8,19 +8,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database.base import Base
 from app.models.common import UUIDTimestampMixin
 
-
 class Category(UUIDTimestampMixin, Base):
     __tablename__ = "categories"
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     description: Mapped[Optional[str]] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-
 class Brand(UUIDTimestampMixin, Base):
     __tablename__ = "brands"
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
 
 class Product(UUIDTimestampMixin, Base):
     __tablename__ = "products"
@@ -40,8 +37,9 @@ class Product(UUIDTimestampMixin, Base):
     selling_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     minimum_stock: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
     tax_rate_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tax_rates.id"))
+    token_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_value: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
 
 class Customer(UUIDTimestampMixin, Base):
     __tablename__ = "customers"
@@ -53,7 +51,6 @@ class Customer(UUIDTimestampMixin, Base):
     credit_limit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     opening_balance: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
 
 class Supplier(UUIDTimestampMixin, Base):
     __tablename__ = "suppliers"
