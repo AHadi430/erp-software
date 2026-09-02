@@ -1,0 +1,24 @@
+import { FormEvent, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Party, request } from "./api";
+import { FinanceView } from "./OperationsViews";
+import { LedgerView } from "./RecordsViews";
+
+type Invoice = { id: string; invoice_number: string; customer_id?: string; supplier_id?: string; due_amount: string };
+
+function FinancePartyPayment({ kind }: { kind: "customer" | "supplier" }) {
+  const isCustomer = kind === "customer"; const client = useQueryClient();
+  const [partyId, setPartyId] = useState(""); const [invoiceId, setInvoiceId] = useState(""); const [amount, setAmount] = useState(""); const [method, setMethod] = useState("cash");
+  const parties = useQuery({ queryKey: ["finance-payment-parties", kind], queryFn: () => request<Party[]>(isCustomer ? "/customers?limit=200" : "/suppliers?limit=200") });
+  const invoices = useQuery({ queryKey: ["finance-payment-invoices", kind], queryFn: () => request<Invoice[]>(isCustomer ? "/sales?limit=200" : "/purchases?limit=200") });
+  const open = invoices.data?.filter(x => Number(x.due_amount) > 0 && (isCustomer ? x.customer_id === partyId : x.supplier_id === partyId)) ?? [];
+  const mutation = useMutation({ mutationFn: () => request(isCustomer ? "/sales/payments" : "/purchases/payments", { method: "POST", body: JSON.stringify({ [isCustomer ? "customer_id" : "supplier_id"]: partyId, amount: Number(amount), method, allocations: [{ invoice_id: invoiceId, amount: Number(amount) }] }) }), onSuccess: () => { setAmount(""); setInvoiceId(""); client.invalidateQueries({ queryKey: ["dashboard"] }); client.invalidateQueries({ queryKey: ["finance-payment-invoices", kind] }); client.invalidateQueries({ queryKey: ["performance"] }); client.invalidateQueries({ queryKey: ["customer-ledger"] }); client.invalidateQueries({ queryKey: ["supplier-ledger"] }); } });
+  const submit = (e: FormEvent) => { e.preventDefault(); mutation.mutate(); };
+  const selected = open.find(x => x.id === invoiceId);
+  return <section className="panel"><h2>{isCustomer ? "Receive customer payment" : "Pay supplier"}</h2><form className="settings-form" onSubmit={submit}><select required value={partyId} onChange={e => { setPartyId(e.target.value); setInvoiceId(""); }}><option value="">Select {isCustomer ? "customer" : "supplier"}</option>{parties.data?.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><select required value={invoiceId} onChange={e => { setInvoiceId(e.target.value); setAmount(open.find(x => x.id === e.target.value)?.due_amount ?? ""); }}><option value="">Select open invoice</option>{open.map(x => <option key={x.id} value={x.id}>{x.invoice_number} — due PKR {Number(x.due_amount).toLocaleString("en-PK")}</option>)}</select><input required min="0.01" max={selected?.due_amount} step="0.01" type="number" placeholder="Amount" value={amount} onChange={e => setAmount(e.target.value)} /><select value={method} onChange={e => setMethod(e.target.value)}><option value="cash">Cash</option><option value="bank_transfer">Bank transfer</option><option value="cheque">Cheque</option></select><button disabled={mutation.isPending}>{mutation.isPending ? "Posting…" : isCustomer ? "Receive payment" : "Pay supplier"}</button></form>{mutation.error && <p className="error">{mutation.error.message}</p>}{mutation.isSuccess && <p className="success">Payment posted and ledger updated.</p>}</section>;
+}
+
+export function FinanceWorkspaceView() {
+  const [shortcut, setShortcut] = useState<"customer" | "supplier" | "ledger-customer" | "ledger-supplier" | null>(null);
+  return <section className="invoice-page"><p className="eyebrow">FINANCE</p><h1>Finance, cash & payments</h1><div className="action-grid"><button type="button" className="action-card" onClick={() => setShortcut("customer")}><strong>Receive Customer Payment</strong><small>Receive money and allocate it to an open customer invoice.</small></button><button type="button" className="action-card" onClick={() => setShortcut("supplier")}><strong>Pay Supplier</strong><small>Pay a supplier and reduce the selected payable.</small></button><button type="button" className="action-card" onClick={() => setShortcut("ledger-customer")}><strong>Customer Ledger</strong><small>Quickly inspect a customer's complete transaction history.</small></button><button type="button" className="action-card" onClick={() => setShortcut("ledger-supplier")}><strong>Supplier Ledger</strong><small>Quickly inspect a supplier's complete transaction history.</small></button></div>{shortcut === "customer" && <FinancePartyPayment kind="customer" />}{shortcut === "supplier" && <FinancePartyPayment kind="supplier" />}{shortcut === "ledger-customer" && <LedgerView kind="customer" />}{shortcut === "ledger-supplier" && <LedgerView kind="supplier" />}<FinanceView /></section>;
+}
