@@ -83,7 +83,12 @@ export function TokenView() {
     </> : <>
       <section className="panel">
         <h2>Record painter claim</h2>
-        <p className="hint">Available now: <strong>{available} whole tokens</strong>. The claim reserves those physical tokens. Payment is recorded separately when you pay the painter.</p>
+        <p className="hint">
+  Available now: <strong>{available} whole tokens</strong>.
+  Painter claims are recorded separately and do not reduce
+  the usable token inventory. Payment is recorded separately
+  when you reimburse the painter.
+</p>
         <form className="settings-form" onSubmit={submit}>
           <input required placeholder="Painter name" value={name} onChange={e => setName(e.target.value)} />
           <input placeholder="Phone" value={phone} onChange={e => setPhone(e.target.value)} />
