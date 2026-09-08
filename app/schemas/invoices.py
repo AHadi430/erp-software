@@ -17,6 +17,7 @@ class SalesInvoiceCreate(BaseModel):
     customer_id: Optional[uuid.UUID] = None
     invoice_date: date = Field(default_factory=date.today)
     payment_method: PaymentMethod = PaymentMethod.CASH
+    payment_submethod: Optional[str] = Field(default=None, max_length=30)
     paid_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
     tax_inclusive: bool = False
     notes: Optional[str] = None
@@ -26,6 +27,7 @@ class PurchaseInvoiceCreate(BaseModel):
     supplier_invoice_number: Optional[str] = Field(default=None, max_length=80)
     invoice_date: date = Field(default_factory=date.today)
     payment_method: PaymentMethod = PaymentMethod.CASH
+    payment_submethod: Optional[str] = Field(default=None, max_length=30)
     paid_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
     tax_inclusive: bool = False
     notes: Optional[str] = None
@@ -52,6 +54,8 @@ class InvoiceRead(BaseModel):
     customer_id: Optional[uuid.UUID] = None
     supplier_id: Optional[uuid.UUID] = None
     status: str
+    payment_method: PaymentMethod
+    payment_submethod: Optional[str] = None
     subtotal: Decimal
     discount_total: Decimal
     tax_total: Decimal
