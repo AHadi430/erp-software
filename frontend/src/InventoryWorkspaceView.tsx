@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Product, request } from "./api";
-import { InventoryView } from "./OperationsViews";
+import { InventoryViewV2 as InventoryView } from "./InventoryViewV2";
 import { ProductAutocomplete } from "./ProductAutocomplete";
 
 type ProductPlus = Product & { sku?: string };
