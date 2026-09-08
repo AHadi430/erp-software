@@ -5,7 +5,7 @@ import { ProductAutocomplete } from "./ProductAutocomplete";
 
 type Kind = "sale" | "purchase";
 type PaymentMethod = "cash" | "bank_transfer" | "cheque" | "other" | "jazzcash" | "easypaisa";
-type ProductPlus = Product & { sku: string; token_enabled?: boolean; token_value?: string };
+type ProductPlus = Product & { sku: string; token_enabled?: boolean; token_value?: string;minimum_stock: number };
 type Line = { product_id: string; quantity: number; unit_price: number; discount_amount: number; token_included: boolean; token_value: number };
 const money = (value: number) => new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 const label = (p: ProductPlus) => `${p.sku} — ${p.name} (${p.packaging})`;
