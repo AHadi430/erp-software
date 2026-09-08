@@ -25,6 +25,8 @@ class PaymentMethod(str, enum.Enum):
     BANK_TRANSFER = "bank_transfer"
     CHEQUE = "cheque"
     OTHER = "other"
+    JAZZCASH = "jazzcash"
+    EASYPAISA = "easypaisa"
 
 
 class StockMovement(UUIDTimestampMixin, Base):
